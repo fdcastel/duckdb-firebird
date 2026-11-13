@@ -24,8 +24,8 @@
 #   * 3  : the fallback path. Every scan reports 'independent' and must
 #          complete; its sums are only reported (they are expected to
 #          drift, which also shows the writer really interleaves).
-# Both the firebird_scan(..., partitions=4) path and the ATTACH path are
-# checked.
+# The firebird_scan(..., partitions=4) path (PK ranges and, with
+# partition_by='dbkey', DB_KEY ranges) and the ATTACH path are checked.
 #
 # Defaults match the Linux FB matrix (server in the `fb` container, port
 # 3050). Override for local runs:
@@ -137,6 +137,11 @@ echo "== firebird_scan(..., partitions=4)"
 for i in $(seq 1 "$SCANS"); do
     run_scan "scan $i" \
         "SELECT SUM(VAL), COUNT(*) FROM firebird_scan('$FIREBIRD_SNAPSHOT_DB', 'ACC', partitions=4);"
+done
+
+echo "== firebird_scan(..., partitions=4, partition_by='dbkey')  (PK ranges on FB3)"
+for i in $(seq 1 "$SCANS"); do
+    run_scan "scan $i"         "SELECT SUM(VAL), COUNT(*) FROM firebird_scan('$FIREBIRD_SNAPSHOT_DB', 'ACC', partitions=4, partition_by='dbkey');"
 done
 
 echo "== ATTACH (automatic partitioning, pooled connections)"

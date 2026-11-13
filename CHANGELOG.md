@@ -18,9 +18,18 @@
 
 ### Added
 
+- `partition_by = 'pk' | 'dbkey'` for `firebird_scan()`. `'dbkey'` (explicit
+  `partitions >= 2`, base tables, Firebird 4+) splits the table into
+  `RDB$DB_KEY` ranges over its physical record space (`RDB$PAGES`,
+  `MAKE_DBKEY`), read inside the shared snapshot: no `MIN`/`MAX` probe,
+  balanced partitions on sparse keys, and tables without a usable primary
+  key can be split. The default `'pk'` keeps the previous behavior;
+  anything `'dbkey'` can't handle falls back to it.
+- `partition_method` column (`'none'` / `'pk'` / `'dbkey'`) in
+  `firebird_last_query()` and `firebird_query_log()` (21 columns).
 - `snapshot_mode` column (`'serial'` / `'shared'` / `'independent'`) in
   `firebird_last_query()` and `firebird_query_log()`, appended after
-  `bytes_read_estimate` (20 columns).
+  `bytes_read_estimate`.
 - `scripts/check_shared_snapshot.sh`: consistency check under a concurrent
   writer, run as its own step on every Firebird 3/4/5 leg of the Linux
   matrix.

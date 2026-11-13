@@ -63,6 +63,8 @@ Supported named parameters include:
 - `row_limit`
 - `row_offset`
 - `partitions`
+- `partition_by` — `'pk'` (default) or `'dbkey'`; see [Choosing how a
+  table is split (`partition_by`)](#choosing-how-a-table-is-split-partition_by)
 - `none_pushdown` — opt-in pushdown of `=` / `IN` over `CHARACTER SET NONE`
   CHAR/VARCHAR columns when `none_encoding` is `win1252` or `iso8859_1`
   (default `false`; see [Charset handling of `CHARACTER SET NONE`
@@ -103,6 +105,43 @@ connections commit changes, as a serial scan does.
   duration. It does not come from the ATTACH connection pool, so
   `firebird_pool_stats()` counters are unaffected.
 
+#### Choosing how a table is split (`partition_by`)
+
+`partition_by` selects how `firebird_scan` splits a table when
+`partitions > 1`:
+
+- `'pk'` (default): ranges of a single-column integer primary key,
+  computed from its `MIN`/`MAX`. Unchanged from earlier versions.
+- `'dbkey'`: ranges of `RDB$DB_KEY` over the table's physical record
+  space, which comes from `RDB$PAGES` and the page size. The bounds are
+  read inside the scan's shared snapshot, so no `MIN`/`MAX` probe is
+  needed. Partitions are balanced even when the primary key is sparse or
+  skewed, and **tables without a usable primary key can be split too**.
+  Each partition is a bounded full scan
+  (`RDB$DB_KEY >= MAKE_DBKEY(...) AND RDB$DB_KEY < MAKE_DBKEY(...)`,
+  plan `Full Scan (lower bound, upper bound)`).
+
+`'dbkey'` applies only with an explicit `partitions` of 2 or more, to
+persistent base tables, on Firebird 4.0 or later (where `MAKE_DBKEY` and
+bounded DB_KEY scans exist). In every other case (Firebird 3, views,
+`partitions` unset or `1`) the scan behaves as without `partition_by`.
+`firebird_last_query().partition_method` reports what was used: `pk`,
+`dbkey`, or `none` (one partition).
+
+```sql
+-- A table without a primary key, split four ways (Firebird 4+):
+SELECT COUNT(*)
+FROM firebird_scan('<conn>', 'AUDIT_LOG', partitions=4, partition_by='dbkey');
+SELECT partition_method, snapshot_mode, partitions FROM firebird_last_query();
+-- dbkey  shared  4
+```
+
+Splitting a scan does not always make it faster. In our measurements
+(4-core VM, TCP loopback) four partitions sped up a 19-column scan by about
+1.3×, but made narrow or column-projected scans 2–3× slower than serial;
+DB_KEY and PK ranges performed the same. Measure before relying on
+`partitions > 1`.
+
 #### Pagination determinism (`RDB$DB_KEY`)
 
 When paginating (`row_limit`/`row_offset`) against a table or view with no
@@ -114,8 +153,10 @@ all, so page boundaries were not deterministic — this was a bug, now fixed.)
 `RDB$DB_KEY` is a **physical row-pagination stabilizer valid only for the
 duration of one scan/transaction**. It is NOT a business ordering contract,
 is NOT stable across transactions or after row updates, and is NEVER used
-for range partitioning, incremental/watermark logic, or recommended as a
-key anywhere else in this extension.
+for incremental/watermark logic or recommended as a key anywhere else in
+this extension. The one other use is `partition_by = 'dbkey'`, where the
+DB_KEY ranges are planned and read inside one shared snapshot, the only
+scope in which they are stable.
 
 When a usable single-column numeric primary key exists, it is used for the
 `ORDER BY` instead of `RDB$DB_KEY` — preferred, since it is a real,
@@ -671,10 +712,11 @@ Useful fields include:
 - rows read
 - estimated bytes read from Firebird (`bytes_read_estimate`)
 - parallel scan details, including whether the partitions shared one
-  snapshot (`snapshot_mode`)
+  snapshot (`snapshot_mode`) and how the table was split
+  (`partition_method`)
 - connection reuse details
 
-The schema is 20 columns (shared with `firebird_query_log()`). The
+The schema is 21 columns (shared with `firebird_query_log()`). The
 pushdown-explainability columns (`limit_pushed`, `offset_pushed`,
 `not_pushed_reasons`) make it explicit what reached Firebird and why a
 filter stayed local, and `bytes_read_estimate` (added last, G5) supports
@@ -838,7 +880,7 @@ FROM firebird_explain_pushdown(
 
 Returns the in-memory query log for the current DuckDB session.
 
-Each row carries the same 20-column telemetry schema as
+Each row carries the same 21-column telemetry schema as
 `firebird_last_query()` — including `bytes_read_estimate`, so a rotated
 log keeps the per-query transfer estimates of the session.
 
