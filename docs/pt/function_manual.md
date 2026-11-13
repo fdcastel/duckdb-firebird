@@ -1613,7 +1613,7 @@ SELECT *
 FROM firebird_health('fb');
 ```
 
-Colunas de saida (15):
+Colunas de saida (17):
 
 | Coluna | Tipo | Descricao |
 | --- | --- | --- |
@@ -1632,6 +1632,8 @@ Colunas de saida (15):
 | `oat_gap` | BIGINT | `next_transaction - oldest_active` |
 | `attachments` | INTEGER | Numero de conexoes visiveis ao usuario atual |
 | `warnings` | LIST(VARCHAR) | Lista de avisos ativos (vazia quando tudo esta ok) |
+| `client_version` | VARCHAR | Versao da biblioteca cliente Firebird carregada, ex.: `'5.0.3.1683'` |
+| `inline_blob_size` | INTEGER | Maior blob, em bytes, que o Firebird envia inline junto com a linha neste attach (`0` = inline desligado); `NULL` quando o cliente ou o servidor e anterior ao 5.0.3. Veja `SET firebird_max_inline_blob_size` |
 
 Avisos possiveis:
 
@@ -1643,6 +1645,7 @@ Avisos possiveis:
 | `forced_writes_off` | `forced_writes = false` |
 | `charset_none` | `default_charset = 'NONE'` |
 | `mon_unavailable` | Falha real na consulta de monitoramento |
+| `inline_blobs_unavailable` | O servidor e 5.0.3+ mas a biblioteca cliente carregada e mais antiga, entao os blobs nao vem inline (carregue um `fbclient` 5.0.3+) |
 
 Os quatro primeiros codigos (`oit_gap_high`, `oat_gap_high`, `sweep_disabled`,
 `forced_writes_off`) so sao avaliados quando a leitura de monitoramento tem
@@ -1918,6 +1921,41 @@ em algumas versoes o valor e parseado mas nao aplicado, cabendo ao
 segue sendo o pedido correto do lado cliente e e inofensivo em servidores
 que o ignoram; o contexto no erro de fetch (abaixo) e a metade confiavel
 do diagnostico.
+
+### `SET firebird_max_inline_blob_size = BYTES`
+
+#### O que faz e como funciona
+
+Blobs inline (Firebird 5.0.3+). Quando a biblioteca cliente carregada e o
+servidor sao 5.0.3 ou mais novos, o Firebird envia blobs ate esse tamanho
+junto com a linha que os referencia. Ler esses blobs nao exige mais idas
+e voltas extras, o que e varias vezes mais rapido em tabelas com muitos
+blobs pequenos (cerca de 14x para 200.000 blobs de texto pequenos via TCP
+na nossa medicao). A extensao envia o valor como
+`isc_dpb_max_inline_blob_size` em toda conexao que abre.
+
+- **Padrao `-1`**: nada e enviado e vale o padrao do proprio cliente,
+  65.535 bytes num cliente 5.0.3+. **Ou seja, o inline ja vem ligado por
+  padrao** sempre que cliente e servidor sao 5.0.3+.
+- `0` desliga o inline; `1..65535` define o limite. Valores fora de
+  `-1..65535` sao rejeitados (o Firebird limita o tamanho a 65.535).
+- Lido no bind do `firebird_scan()` e no `ATTACH`, como
+  `firebird_dummy_packet_interval`. Para um attach ja existente, um `SET`
+  posterior nao se aplica.
+- Clientes e servidores mais antigos ignoram o ajuste.
+- **Para ver o que esta valendo**, use `firebird_health(alias)`:
+  `inline_blob_size` mostra o limite efetivo, ou `NULL` quando um dos
+  lados e anterior ao 5.0.3. O aviso `inline_blobs_unavailable` aponta o
+  caso que tem conserto: servidor 5.0.3+ acessado por um `fbclient` mais
+  antigo.
+
+```sql
+ATTACH 'firebird://srv:/data/erp.fdb' AS erp (TYPE firebird);
+SELECT client_version, engine_version, inline_blob_size, warnings
+FROM firebird_health('erp');
+
+SET firebird_max_inline_blob_size = 0;   -- desliga para novas conexoes
+```
 
 ## Notas de mapeamento de tipos
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `SET firebird_max_inline_blob_size = BYTES`: tunes or disables Firebird
+  5.0.3+ inline blobs (`isc_dpb_max_inline_blob_size`, `-1` = client
+  default, `0` = off, max 65535), read at `firebird_scan()` bind and at
+  `ATTACH` like `firebird_dummy_packet_interval`. Inlining is already on by
+  default when the client library and the server are both 5.0.3+.
+- `firebird_health()`: `client_version` and `inline_blob_size` columns
+  (17 columns), and the `inline_blobs_unavailable` warning for a 5.0.3+
+  server reached through an older client library.
+
 ## [v1.3.1] - 2026-10-26
 
 Patch release completing DuckDB v2.0 compatibility. No SQL functions,
