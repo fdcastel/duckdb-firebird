@@ -103,8 +103,24 @@ torn=0
 total=0
 
 # run_scan <label> <sql>: runs one partitioned scan, checks mode and sum.
+# A scan during which the writer committed nothing proves nothing about the
+# snapshot, so it is repeated (up to STALL_RETRIES times) before it counts
+# as a failure: on a busy CI runner the writer can stall for a few seconds.
+STALL_RETRIES=${STALL_RETRIES:-2}
 run_scan() {
-    local label=$1 scan_sql=$2 before after out sum count mode parallel
+    local label=$1 scan_sql=$2 attempt
+    for attempt in $(seq 0 "$STALL_RETRIES"); do
+        run_scan_once "$label" "$scan_sql" "$attempt" && return 0
+    done
+    failures=$((failures + 1))
+}
+
+# run_scan_once <label> <sql> <attempt>: one attempt. Returns 1 only when
+# the writer committed nothing during the scan and a retry is still left
+# (or, on the last attempt, after counting nothing: run_scan counts it).
+run_scan_once() {
+    local label=$1 scan_sql=$2 attempt=$3 before after out sum count mode parallel
+    [ "$attempt" -gt 0 ] && label="$label (retry $attempt)"
     before=$(isql_value 'SELECT TRANSFERS FROM WRITER_STATE;')
     out=$(printf '%s\n%s\nSELECT snapshot_mode, parallel_scan FROM firebird_last_query();\n' \
             "$DUCKDB_PRELUDE" "$scan_sql" | "$DUCKDB" -csv -noheader 2>&1 | tr -d '\r') || true
@@ -113,7 +129,6 @@ run_scan() {
     count=$(echo "$out" | sed -n 1p | cut -d, -f2)
     mode=$(echo "$out" | sed -n 2p | cut -d, -f1)
     parallel=$(echo "$out" | sed -n 2p | cut -d, -f2)
-    total=$((total + 1))
     local verdict=ok
     if [ "$mode" != "$expected_mode" ] || [ "$parallel" != "true" ]; then
         verdict="FAIL (snapshot_mode=$mode parallel_scan=$parallel, expected $expected_mode/true)"
@@ -127,10 +142,20 @@ run_scan() {
             verdict="torn read (expected without a shared snapshot)"
         fi
     elif [ "$after" -le "$before" ]; then
-        verdict="FAIL (no transfer committed during the scan; writer stalled?)"
+        if [ "$attempt" -lt "$STALL_RETRIES" ]; then
+            verdict="no transfer committed during the scan; repeating it"
+        else
+            verdict="FAIL (no transfer committed during the scan in $((STALL_RETRIES + 1)) attempts; writer stalled?)"
+        fi
     fi
     echo "  $label: sum=$sum count=$count mode=$mode transfers_during_scan=$((after - before)) -> $verdict"
-    case $verdict in FAIL*) failures=$((failures + 1)); echo "$out" | sed 's/^/    | /' ;; esac
+    case $verdict in
+        "no transfer"*) return 1 ;;
+        FAIL*"writer stalled"*) total=$((total + 1)); echo "$out" | sed 's/^/    | /'; return 1 ;;
+        FAIL*) total=$((total + 1)); failures=$((failures + 1)); echo "$out" | sed 's/^/    | /'; return 0 ;;
+    esac
+    total=$((total + 1))
+    return 0
 }
 
 echo "== firebird_scan(..., partitions=4)"
