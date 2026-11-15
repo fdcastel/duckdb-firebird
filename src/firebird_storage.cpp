@@ -152,6 +152,7 @@ public:
         data->none_pushdown = none_pushdown_;
         data->numeric_widen_int64 = numeric_widen_int64_;
         data->pool = pool_;
+        data->attach_catalog = &ParentCatalog();
         data->pk_descriptor = pk_descriptor_; // cached at ATTACH, zero I/O
 
         // View column types/descriptors are already correct here — they
@@ -818,7 +819,69 @@ class FirebirdTransaction final : public Transaction {
 public:
     FirebirdTransaction(TransactionManager &manager, ClientContext &context)
         : Transaction(manager, context) {}
+
+    // PROTOTYPE: pin one read-only SNAPSHOT transaction for the whole DuckDB
+    // transaction on a coordinating connection, on first use; every scan of
+    // this ATTACH in the transaction joins it (isc_tpb_at_snapshot_number).
+    // The connection, and with it the snapshot, ends with the DuckDB
+    // transaction (this object is destroyed at commit or rollback).
+    int64_t SnapshotNumber(const FirebirdConnectionInfo &info,
+                           const std::shared_ptr<FirebirdConnectionPool> &pool) {
+        std::lock_guard<std::mutex> g(lock_);
+        if (!attempted_) {
+            attempted_ = true;
+            try {
+                std::unique_ptr<FirebirdConnection> conn;
+                if (pool && PooledCoordinator()) {
+                    conn = pool->Acquire();
+                    pool_ = pool;
+                } else {
+                    conn = make_uniq<FirebirdConnection>(info);
+                }
+                if (conn->TryStartSnapshotTransaction()) {
+                    const int64_t n = conn->SnapshotNumber();
+                    if (n > 0) {
+                        number_ = n;
+                    }
+                }
+                conn_ = std::move(conn);
+            } catch (...) {
+                // Fall back to per-scan behavior.
+            }
+        }
+        return number_;
+    }
+
+    ~FirebirdTransaction() override {
+        if (conn_ && pool_) {
+            try {
+                conn_->RestoreDefaultTransaction();
+                pool_->Release(std::move(conn_));
+            } catch (...) {
+                pool_->Discard(std::move(conn_));
+            }
+        }
+    }
+
+    static bool PooledCoordinator() {
+        static const bool on = std::getenv("PROTO_POOLED_COORDINATOR") != nullptr;
+        return on;
+    }
+
+private:
+    std::mutex lock_;
+    bool attempted_ = false;
+    int64_t number_ = 0;
+    std::unique_ptr<FirebirdConnection> conn_;
+    std::shared_ptr<FirebirdConnectionPool> pool_;
 };
+
+int64_t FirebirdTransactionSnapshotNumber(ClientContext &context, Catalog &catalog,
+                                          const FirebirdConnectionInfo &info,
+                                          const std::shared_ptr<FirebirdConnectionPool> &pool) {
+    auto &tx = Transaction::Get(context, catalog);
+    return static_cast<FirebirdTransaction &>(tx).SnapshotNumber(info, pool);
+}
 
 class FirebirdTransactionManager final : public TransactionManager {
 public:

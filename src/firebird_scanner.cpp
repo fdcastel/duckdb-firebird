@@ -1,4 +1,5 @@
 #include "firebird_scanner.hpp"
+#include "firebird_storage.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -104,6 +105,8 @@ struct FirebirdGlobalState : public GlobalTableFunctionState {
     // the record of an earlier query when no cursor of this scan was
     // recorded.
     std::mutex telemetry_lock;
+    // PROTOTYPE: snapshot_number belongs to the DuckDB transaction.
+    bool transaction_snapshot = false;
     bool cursor_recorded = false;
     std::string join_error;
 
@@ -795,9 +798,24 @@ static void StartSharedSnapshot(const FirebirdBindData &bind,
 }
 
 static unique_ptr<GlobalTableFunctionState> FirebirdScanInitGlobal(
-    ClientContext & /*context*/, TableFunctionInitInput &input) {
+    ClientContext &context, TableFunctionInitInput &input) {
     auto &bind = input.bind_data->Cast<FirebirdBindData>();
     auto gstate = make_uniq<FirebirdGlobalState>();
+
+    // PROTOTYPE: SET firebird_transaction_snapshot = true makes every scan
+    // of an ATTACH join the snapshot its DuckDB transaction pinned.
+    if (bind.attach_catalog) {
+        Value v;
+        if (context.TryGetCurrentSetting("firebird_transaction_snapshot", v) &&
+            !v.IsNull() && v.GetValue<bool>()) {
+            const int64_t n = FirebirdTransactionSnapshotNumber(
+                context, *bind.attach_catalog, bind.conn_info, bind.pool);
+            if (n > 0) {
+                gstate->snapshot_number = n;
+                gstate->transaction_snapshot = true;
+            }
+        }
+    }
 
     if (bind.pk) {
         int64_t lo = bind.pk->min_value;
@@ -845,7 +863,7 @@ static unique_ptr<GlobalTableFunctionState> FirebirdScanInitGlobal(
         gstate->max_threads = 1;
     }
 
-    if (gstate->partitions.size() > 1) {
+    if (gstate->partitions.size() > 1 && !gstate->transaction_snapshot) {
         StartSharedSnapshot(bind, *gstate);
     }
 
@@ -1063,7 +1081,10 @@ static bool OpenNextPartitionCursor(ClientContext &ctx,
         rec.offset_pushed = offset_to_push;
         rec.partitions    = static_cast<int32_t>(gstate.partitions.size());
         rec.parallel_scan = rec.partitions > 1;
-        if (!rec.parallel_scan) {
+        if (gstate.transaction_snapshot && local.conn &&
+            local.conn->InSnapshotTransaction()) {
+            rec.snapshot_mode = "transaction";
+        } else if (!rec.parallel_scan) {
             rec.snapshot_mode = "serial";
         } else if (gstate.snapshot_number > 0 && local.conn &&
                    local.conn->InSnapshotTransaction()) {

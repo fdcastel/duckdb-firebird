@@ -79,6 +79,9 @@ struct FirebirdBindData : public TableFunctionData {
     // (FirebirdTableEntry::GetScanFunction). Direct firebird_scan() calls
     // leave this null, so each LocalState constructs its own connection.
     std::shared_ptr<FirebirdConnectionPool> pool;
+    // PROTOTYPE: the ATTACH catalog this scan belongs to (null for a direct
+    // firebird_scan() call), so the scan can find its DuckDB transaction.
+    Catalog *attach_catalog = nullptr;
     // Pre-translated WHERE fragments lifted from BoundFunctionExpression
     // filters that the TableFilterSet path doesn't carry — LIKE 'prefix%'
     // ESCAPE '\\', NOT IN (?, ?, ...), BETWEEN ? AND ?, and the boolean

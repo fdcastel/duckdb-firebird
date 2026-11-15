@@ -203,6 +203,12 @@ static void LoadInternal(ExtensionLoader &loader) {
     // Per-ClientContext storage (FirebirdObservabilityState) ensures one
     // session never reads another's ring buffer.
     config.AddExtensionOption(
+        "firebird_transaction_snapshot",
+        "PROTOTYPE: every scan of an ATTACH reads the Firebird snapshot its "
+        "DuckDB transaction pinned (Firebird 4+).",
+        LogicalType::BOOLEAN,
+        Value::BOOLEAN(false));
+    config.AddExtensionOption(
         "firebird_query_log_size",
         "Maximum entries kept by firebird_query_log() per session. "
         "0 disables the log (default).",

@@ -21,4 +21,14 @@ unique_ptr<StorageExtension> GetFirebirdStorageExtension();
 // pool already tracks; never leases a connection.
 TableFunction GetFirebirdPoolStatsFunction();
 
+// PROTOTYPE (attach-wide snapshot): the Firebird snapshot number pinned by
+// the current DuckDB transaction on this attached catalog, started on
+// first use. 0 when no snapshot can be shared (Firebird 3, or it could
+// not be started).
+struct FirebirdConnectionInfo;
+class FirebirdConnectionPool;
+int64_t FirebirdTransactionSnapshotNumber(ClientContext &context, Catalog &catalog,
+                                          const FirebirdConnectionInfo &info,
+                                          const std::shared_ptr<FirebirdConnectionPool> &pool);
+
 } // namespace duckdb
