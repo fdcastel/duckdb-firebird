@@ -137,7 +137,7 @@ SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID
 - **Commit and the client:** in autocommit, a DuckDB statement whose
   result is streamed commits only once the result is fully read. A client
   that read `firebird_execute`'s row with `fetchone()` and then closed the
-  connection had its writes rolled back without an error (DWDb hit this
+  connection had its writes rolled back without an error (an ETL hit this
   from Python). `firebird_execute` now makes DuckDB materialize its result,
   as DuckDB does for INSERT, so the statement has run and committed before
   the client sees the row. `INSERT INTO fb.main.T` was already safe.
@@ -379,6 +379,6 @@ reads the table's name and statistics (none).
 - RETURNING and MERGE INTO stay out of scope.
 
 **Recommendation:** feasible in about 1 to 1.5 days with tests. It is
-worth doing only if DWDb needs UPDATE/DELETE written as DuckDB SQL over
+worth doing only if the ETL needs UPDATE/DELETE written as DuckDB SQL over
 `fb.main`. Otherwise `firebird_execute` already covers both (one
 server-side statement, or per-row with `source`), and faster.
