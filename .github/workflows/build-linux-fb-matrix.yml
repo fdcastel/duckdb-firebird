@@ -424,6 +424,17 @@ jobs:
             ./build/release/test/unittest test/sql/firebird_insert.test
           fi
 
+      - name: Writes commit when a client reads one row and closes (Python)
+        # sqllogictest reads every result fully; this needs a real client
+        # that stops after fetchone(). Read-write prototype, DuckDB 1.5.6.
+        if: matrix.duckdb == 'v1.5.6'
+        run: |
+          python3 -m venv /tmp/pyduck
+          /tmp/pyduck/bin/pip install --quiet duckdb==1.5.6
+          /tmp/pyduck/bin/python scripts/check_execute_fetchone.py \
+            "$GITHUB_WORKSPACE/build/release/extension/firebird/firebird.duckdb_extension" \
+            "$FIREBIRD_RW_DB"
+
       - name: Firebird 4 client against the Firebird 5 server (inline_blobs_unavailable)
         # One Firebird 5 leg is enough: the inline-blob decision in
         # firebird_health.cpp and the client loader have no DuckDB-version

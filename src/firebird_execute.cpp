@@ -26,6 +26,7 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 
 #include "firebird_client.hpp"
@@ -125,6 +126,15 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
         }
     }
     bind->attach = GetFirebirdAttachHandle(context, bind->alias, kFunctionName);
+#ifndef FIREBIRD_DUCKDB_V2
+    // Run the whole statement before the client sees its result, as DuckDB
+    // does for INSERT. A streamed result commits only once it is fully read:
+    // a client that read the one row with fetchone() and closed the
+    // connection rolled every write back without an error.
+    if (input.binder) {
+        input.binder->GetStatementProperties().output_type = QueryResultOutputType::FORCE_MATERIALIZED;
+    }
+#endif
     CheckWritable(bind->attach, bind->alias);
     if (bind->commit_every > 0 && !bind->has_source) {
         throw BinderException("%s: commit_every needs source := '<query>'", kFunctionName);

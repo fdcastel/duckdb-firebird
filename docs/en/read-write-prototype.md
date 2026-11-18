@@ -134,6 +134,18 @@ SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID
   an "execute any statement" contract (ODBC exec, `postgres_execute`); to
   read the rows, use `firebird_query`. With `source` (WP3) they are
   refused.
+- **Commit and the client:** in autocommit, a DuckDB statement whose
+  result is streamed commits only once the result is fully read. A client
+  that read `firebird_execute`'s row with `fetchone()` and then closed the
+  connection had its writes rolled back without an error (DWDb hit this
+  from Python). `firebird_execute` now makes DuckDB materialize its result,
+  as DuckDB does for INSERT, so the statement has run and committed before
+  the client sees the row. `INSERT INTO fb.main.T` was already safe.
+  `scripts/check_execute_fetchone.py` checks it with the Python client:
+  `fetchone()`, close, look again from a new connection. Before the change
+  the row was missing. On DuckDB v2.0 (built, not tested) the statement
+  properties have no output type, so this is not applied; read results
+  fully there.
 - **DDL:** allowed and committed with the transaction. The ATTACH's
   catalog is not refreshed: a table created this way does not appear
   under `fb.main` until the database is attached again (`firebird_query`
