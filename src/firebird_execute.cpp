@@ -65,11 +65,17 @@ void CheckWritable(const FirebirdAttachHandle &attach, const std::string &alias)
     }
 }
 
-// SELECTs belong to firebird_query; transaction control to DuckDB.
-void CheckStatementType(FirebirdStatement &stmt) {
+// Transaction control belongs to DuckDB. A statement that returns rows
+// (SELECT, a selectable procedure, EXECUTE BLOCK with SUSPEND) is accepted
+// only without a source: it runs, its rows are read and discarded (so a
+// selectable procedure's side effects happen, as in isql), and
+// rows_affected is NULL. Returns whether the statement returns rows.
+bool CheckStatementType(FirebirdStatement &stmt, bool allow_rows) {
     const int type = stmt.StatementType();
-    if (type == isc_info_sql_stmt_select || type == isc_info_sql_stmt_select_for_upd) {
-        throw InvalidInputException("%s: this statement returns rows; use firebird_query() to read",
+    const bool returns_rows = type == isc_info_sql_stmt_select || type == isc_info_sql_stmt_select_for_upd;
+    if (returns_rows && !allow_rows) {
+        throw InvalidInputException("%s: with source, the statement must not return rows (this one does); "
+                                    "use firebird_query() to read",
                                     kFunctionName);
     }
     if (type == isc_info_sql_stmt_start_trans || type == isc_info_sql_stmt_commit ||
@@ -79,6 +85,7 @@ void CheckStatementType(FirebirdStatement &stmt) {
                                     "ROLLBACK in the statement",
                                     kFunctionName);
     }
+    return returns_rows;
 }
 
 unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFunctionBindInput &input,
@@ -147,7 +154,7 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
             auto conn = bind->attach.pool->Acquire();
             try {
                 FirebirdStatement stmt(*conn, bind->sql, FirebirdStatement::PrepareOnlyTag {});
-                CheckStatementType(stmt);
+                CheckStatementType(stmt, false);
                 param_count = stmt.DescribeInput().size();
             } catch (...) {
                 bind->attach.pool->Release(std::move(conn));
@@ -194,6 +201,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
 
     int64_t rows_affected = 0;
     int64_t executions = 0;
+    bool rows_unknown = !bind.count_rows;
     if (!bind.has_source && IsCreateDatabaseStatement(bind.sql)) {
         // Creates another database; this ATTACH's transaction is not involved.
         FirebirdCreateDatabase(bind.sql, bind.attach.dialect);
@@ -201,22 +209,29 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     } else if (!bind.has_source) {
         auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
         FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
-        CheckStatementType(stmt);
+        const bool returns_rows = CheckStatementType(stmt, true);
         const auto params = stmt.DescribeInput().size();
         if (params > 0) {
             throw InvalidInputException("%s: the statement has %llu parameter(s) (?); pass their values with "
                                         "source := '<query>'",
                                         kFunctionName, static_cast<unsigned long long>(params));
         }
-        stmt.ExecuteNoCursor(bind.sql);
-        if (bind.count_rows) {
-            rows_affected = stmt.RecordsAffected();
+        if (returns_rows) {
+            stmt.ExecuteCursor(bind.sql);
+            while (stmt.Fetch()) {
+            }
+            rows_unknown = true;
+        } else {
+            stmt.ExecuteNoCursor(bind.sql);
+            if (bind.count_rows) {
+                rows_affected = stmt.RecordsAffected();
+            }
         }
         executions = 1;
     } else {
         auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
         FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
-        CheckStatementType(stmt);
+        CheckStatementType(stmt, false);
         FirebirdParamEncoder encoder(stmt, bind.source_types, bind.attach.none_encoding);
 
         Connection con(*context.db);
@@ -265,7 +280,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     }
 
     output.SetCardinality(1);
-    output.data[0].SetValue(0, bind.count_rows ? Value::BIGINT(rows_affected) : Value(LogicalType::BIGINT));
+    output.data[0].SetValue(0, rows_unknown ? Value(LogicalType::BIGINT) : Value::BIGINT(rows_affected));
     output.data[1].SetValue(0, Value::BIGINT(executions));
 }
 

@@ -157,10 +157,33 @@ SELECT * FROM firebird_execute('rw', 'DROP TABLE RW_DDL');
 
 # --- Statements firebird_execute refuses ----------------------------------------
 
-statement error
-SELECT * FROM firebird_execute('rw', 'SELECT ID FROM RW_LOG');
+# A statement that returns rows runs; its rows are read and discarded, and
+# rows_affected is unknown (NULL).
+query II
+SELECT * FROM firebird_execute('rw', 'SELECT 1 FROM RDB$DATABASE');
 ----
-use firebird_query() to read
+NULL	1
+
+# ... so a selectable procedure's side effects happen, and are committed
+# with the DuckDB transaction.
+query II
+SELECT * FROM firebird_execute('rw', 'SELECT * FROM SP_WRITE');
+----
+NULL	1
+
+query II con2
+SELECT ID, NOTE FROM firebird_query('ro', 'SELECT ID, NOTE FROM RW_LOG WHERE NOTE = ''written''');
+----
+1	written
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_LOG WHERE NOTE = ''written''');
+
+# With a source, a statement that returns rows is refused.
+statement error
+SELECT * FROM firebird_execute('rw', 'SELECT ID FROM RW_LOG WHERE ID = ?', source := 'SELECT 1');
+----
+with source, the statement must not return rows
 
 statement error
 SELECT * FROM firebird_execute('rw', 'COMMIT');

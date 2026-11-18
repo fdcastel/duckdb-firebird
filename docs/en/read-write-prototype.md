@@ -122,12 +122,18 @@ SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID
   independent of the transaction snapshot coordinator (upstream issue 104
   work): reads, including reads in the same DuckDB transaction, do not see
   uncommitted writes.
-- **Statements:** anything that returns no rows: DML, DDL, `EXECUTE
-  PROCEDURE`, EXECUTE BLOCK without SUSPEND. SELECTs are refused (use
-  `firebird_query`), and so are COMMIT, ROLLBACK and SET TRANSACTION:
+- **Statements:** any one statement: DML, DDL, `EXECUTE PROCEDURE`,
+  EXECUTE BLOCK. COMMIT, ROLLBACK and SET TRANSACTION are refused:
   transactions follow DuckDB's. `rows_affected` is what Firebird reports
   through `isc_info_sql_records` (inserted + updated + deleted, including
   the statements inside an EXECUTE BLOCK); `executions` is 1.
+- **Statements that return rows** (SELECT, a selectable procedure,
+  EXECUTE BLOCK with SUSPEND) run in the write transaction. Their rows
+  are read and discarded, so a selectable procedure's side effects
+  happen as in isql, and `rows_affected` is NULL (unknown). This matches
+  an "execute any statement" contract (ODBC exec, `postgres_execute`); to
+  read the rows, use `firebird_query`. With `source` (WP3) they are
+  refused.
 - **DDL:** allowed and committed with the transaction. The ATTACH's
   catalog is not refreshed: a table created this way does not appear
   under `fb.main` until the database is attached again (`firebird_query`
@@ -147,7 +153,7 @@ connections):
 - ROLLBACK, and an error inside the transaction, leave nothing;
 - a statement that fails half-way leaves none of its own changes;
 - EXECUTE BLOCK (2 rows affected), EXECUTE PROCEDURE and DDL run;
-- SELECT and COMMIT are refused;
+- `SELECT 1 FROM RDB$DATABASE` returns NULL|1, a selectable procedure's INSERT is committed (seen by another connection), a SELECT with a source and COMMIT are refused (on the previous code the SELECT case failed with the old refusal);
 - a row lock held by another connection gives "update conflicts with
   concurrent update" after the lock timeout, not a hang;
 - the read pool is still read-only afterwards.
