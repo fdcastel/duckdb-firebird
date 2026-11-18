@@ -212,6 +212,9 @@ jobs:
           echo "FIREBIRD_PARTITIONS_DB=firebird://SYSDBA:masterkey@localhost:3050/var/lib/firebird/data/partitions.fdb?charset=UTF8" >> $GITHUB_ENV
           echo "FIREBIRD_NUMERICS_DB=firebird://SYSDBA:masterkey@localhost:3050/var/lib/firebird/data/numerics.fdb?charset=UTF8" >> $GITHUB_ENV
           echo "FIREBIRD_RW_DB=firebird://SYSDBA:masterkey@localhost:3050/var/lib/firebird/data/rw.fdb?charset=UTF8" >> $GITHUB_ENV
+          # Where firebird_execute_create_db.test creates its databases (the
+          # server's own path).
+          echo "FIREBIRD_RW_CREATE_PREFIX=localhost/3050:/var/lib/firebird/data/" >> $GITHUB_ENV
           # DECVALS still loads into biz4.fdb above (issue #48). Exporting
           # the env HERE (instead of only in the FB4+ smoke step) lets the
           # main suite step run firebird_decfloat.test on FB4/FB5 legs;
@@ -411,6 +414,8 @@ jobs:
           ./build/release/test/unittest test/sql/firebird_query.test
           ./build/release/test/unittest test/sql/firebird_query_fb4.test
           ./build/release/test/unittest test/sql/firebird_secrets.test
+          ./build/release/test/unittest test/sql/firebird_execute.test
+          ./build/release/test/unittest test/sql/firebird_execute_create_db.test
 
       - name: Firebird 4 client against the Firebird 5 server (inline_blobs_unavailable)
         # One Firebird 5 leg is enough: the inline-blob decision in

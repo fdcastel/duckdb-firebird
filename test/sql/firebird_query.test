@@ -166,7 +166,7 @@ SELECT * FROM firebird_query('rw', 'SELECT * FROM SP_WRITE');
 read-only transaction
 
 query I
-SELECT count(*) FROM rw.main.RW_LOG;
+SELECT count(*) FROM rw.main.RW_LOG WHERE NOTE = 'written';
 ----
 0
 

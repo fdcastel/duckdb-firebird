@@ -716,6 +716,7 @@ public:
         : Catalog(db),
           conn_info_(std::move(conn_info)),
           pool_(std::make_shared<FirebirdConnectionPool>(conn_info_, pool_config)),
+          write_pool_(std::make_shared<FirebirdConnectionPool>(conn_info_, pool_config)),
           none_encoding_(none_encoding),
           none_pushdown_(none_pushdown),
           numeric_widen_int64_(numeric_widen_int64) {}
@@ -747,6 +748,13 @@ public:
         std::make_shared<std::atomic<bool>>(false);
 
     const std::shared_ptr<FirebirdConnectionPool> &Pool() const { return pool_; }
+    // Connections for writes (ATTACH ... READ_WRITE). Kept apart from the
+    // read pool, so a scan never gets a connection that held a write
+    // transaction.
+    const std::shared_ptr<FirebirdConnectionPool> &WritePool() const { return write_pool_; }
+    // ATTACH ... (TYPE firebird, READ_WRITE): writes are allowed.
+    bool write_enabled = false;
+    int Dialect() const { return conn_info_.dialect; }
     NoneEncoding NoneEncodingOption() const { return none_encoding_; }
     bool NumericWidenInt64() const { return numeric_widen_int64_; }
 
@@ -851,6 +859,7 @@ public:
 private:
     FirebirdConnectionInfo conn_info_;
     std::shared_ptr<FirebirdConnectionPool> pool_;
+    std::shared_ptr<FirebirdConnectionPool> write_pool_;
     NoneEncoding none_encoding_;
     bool none_pushdown_;
     bool numeric_widen_int64_;
@@ -897,7 +906,8 @@ class FirebirdTransaction final : public Transaction, public FirebirdTransaction
 public:
     FirebirdTransaction(TransactionManager &manager, ClientContext &context,
                         FirebirdCatalog &catalog)
-        : Transaction(manager, context), pool_(catalog.Pool()), catalog_name_(catalog.GetName()),
+        : Transaction(manager, context), pool_(catalog.Pool()), write_pool_(catalog.WritePool()),
+          catalog_name_(catalog.GetName()),
           no_snapshot_numbers_(catalog.no_snapshot_numbers) {}
 
     ~FirebirdTransaction() override {
@@ -907,6 +917,55 @@ public:
         if (conn_) {
             GiveBack(std::move(conn_));
         }
+        if (write_conn_) {
+            // Not committed by the transaction manager: undo.
+            try {
+                EndWrite(false);
+            } catch (...) {
+            }
+        }
+    }
+
+    // The connection holding this DuckDB transaction's Firebird write
+    // transaction, started on first use (from the ATTACH's write pool).
+    FirebirdConnection &WriteConnection(int64_t lock_timeout_s) {
+        std::lock_guard<std::mutex> g(write_lock_);
+        if (!write_conn_) {
+            auto conn = write_pool_->Acquire();
+            try {
+                conn->StartWriteTransaction(lock_timeout_s);
+            } catch (...) {
+                write_pool_->Discard(std::move(conn));
+                throw;
+            }
+            write_conn_ = std::move(conn);
+        }
+        return *write_conn_;
+    }
+
+    // Commits (or rolls back) the write transaction, if one was started,
+    // and returns its connection to the write pool. A connection that
+    // fails either is discarded; a failed commit throws.
+    void EndWrite(bool commit) {
+        std::unique_ptr<FirebirdConnection> conn;
+        {
+            std::lock_guard<std::mutex> g(write_lock_);
+            conn = std::move(write_conn_);
+        }
+        if (!conn) {
+            return;
+        }
+        try {
+            if (commit) {
+                conn->CommitWrite();
+            } else {
+                conn->RollbackWrite();
+            }
+        } catch (...) {
+            write_pool_->Discard(std::move(conn));
+            throw;
+        }
+        write_pool_->Release(std::move(conn));
     }
 
     // Transaction snapshot (opt-in, see GetFirebirdTransactionSnapshot).
@@ -1105,6 +1164,9 @@ private:
     }
 
     std::shared_ptr<FirebirdConnectionPool> pool_;
+    std::shared_ptr<FirebirdConnectionPool> write_pool_;
+    std::mutex write_lock_;
+    std::unique_ptr<FirebirdConnection> write_conn_;
     std::string catalog_name_;
     std::shared_ptr<std::atomic<bool>> no_snapshot_numbers_;
     shared_ptr<FirebirdTransactionSnapshotState> state_;
@@ -1141,11 +1203,22 @@ public:
     }
 
     ErrorData CommitTransaction(ClientContext &, Transaction &transaction) override {
+        ErrorData error;
+        try {
+            transaction.Cast<FirebirdTransaction>().EndWrite(true);
+        } catch (std::exception &ex) {
+            error = ErrorData(ex);
+        }
         End(transaction);
-        return ErrorData();
+        return error;
     }
 
     void RollbackTransaction(Transaction &transaction) override {
+        try {
+            transaction.Cast<FirebirdTransaction>().EndWrite(false);
+        } catch (...) {
+            // The connection was discarded; nothing else to undo.
+        }
         End(transaction);
     }
 
@@ -1304,7 +1377,7 @@ FirebirdAttach(optional_ptr<StorageExtensionInfo> /*info*/,
                AttachedDatabase &db,
                const string & /*name*/,
                AttachInfo &attach_info,
-               AttachOptions & /*options*/) {
+               AttachOptions &options) {
     NoneEncoding none_encoding;
     bool none_pushdown = false;
     bool numeric_widen_int64 = false;
@@ -1345,6 +1418,10 @@ FirebirdAttach(optional_ptr<StorageExtensionInfo> /*info*/,
             catalog->transaction_snapshot_option = b.GetValue<bool>() ? 1 : 0;
         }
     }
+    // ATTACH ... (TYPE firebird, READ_WRITE): an explicit opt-in. The
+    // default (automatic) access mode keeps the ATTACH read-only for
+    // Firebird writes.
+    catalog->write_enabled = options.access_mode == AccessMode::READ_WRITE;
     return std::move(catalog);
 }
 
@@ -1390,7 +1467,16 @@ FirebirdAttachHandle GetFirebirdAttachHandle(ClientContext &context, const strin
     handle.catalog = &fb_catalog;
     handle.none_encoding = fb_catalog.NoneEncodingOption();
     handle.numeric_widen_int64 = fb_catalog.NumericWidenInt64();
+    handle.write_enabled = fb_catalog.write_enabled;
+    handle.read_only = fb_catalog.GetAttached().IsReadOnly();
+    handle.dialect = fb_catalog.Dialect();
     return handle;
+}
+
+FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &catalog,
+                                               int64_t lock_timeout_s) {
+    auto &tx = Transaction::Get(context, catalog).Cast<FirebirdTransaction>();
+    return tx.WriteConnection(lock_timeout_s);
 }
 
 // ---------------------------------------------------------------------------

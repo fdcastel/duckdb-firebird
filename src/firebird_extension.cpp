@@ -72,6 +72,13 @@ static void LoadInternal(ExtensionLoader &loader) {
         "SELECT * FROM firebird_query('fb', 'SELECT DEPT_NO, COUNT(*) FROM EMPLOYEE GROUP BY 1');",
         {"firebird", "query"}));
     loader.RegisterFunction(DescribedTableFunction(
+        GetFirebirdExecuteFunction(), {"alias", "sql"},
+        "Runs one statement that returns no rows (DML, DDL, EXECUTE PROCEDURE, EXECUTE "
+        "BLOCK, CREATE DATABASE) on an ATTACH opened with READ_WRITE, in the DuckDB "
+        "transaction's Firebird write transaction; returns rows_affected and executions.",
+        "SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID = 1');",
+        {"firebird", "write"}));
+    loader.RegisterFunction(DescribedTableFunction(
         GetFirebirdTablesFunction(), {"connection_string"},
         "Lists the Firebird tables visible to a connection, without attaching the database.",
         "SELECT * FROM firebird_tables('database=C:/data/erp.fdb user=APP_READONLY password=secret');",
@@ -321,6 +328,16 @@ static void LoadInternal(ExtensionLoader &loader) {
         "See firebird_health().inline_blob_size.",
         LogicalType::BIGINT,
         Value::BIGINT(-1));
+
+    // Read-write prototype: how long a Firebird write waits for a lock held
+    // by another transaction before it fails.
+    config.AddExtensionOption(
+        "firebird_write_lock_timeout",
+        "Seconds a Firebird write (firebird_execute, INSERT into an ATTACH opened with "
+        "READ_WRITE) waits for a row lock held by another transaction before failing "
+        "(0 = fail at once). Read when the write transaction starts. Default 10.",
+        LogicalType::BIGINT,
+        Value::BIGINT(10));
 }
 
 void FirebirdExtension::Load(ExtensionLoader &loader) {

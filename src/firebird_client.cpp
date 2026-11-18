@@ -860,7 +860,7 @@ int64_t FirebirdConnection::PageSize() {
 }
 
 void FirebirdConnection::RestoreDefaultTransaction() {
-    if (!in_snapshot_ && tr_) {
+    if (!in_snapshot_ && !in_write_ && tr_) {
         return;  // already on the default read-committed transaction
     }
     ISC_STATUS status[20] = {};
@@ -869,7 +869,120 @@ void FirebirdConnection::RestoreDefaultTransaction() {
         CheckStatus(status, "isc_rollback_transaction");
     }
     in_snapshot_ = false;
+    in_write_ = false;
     StartReadOnlyTransaction();
+}
+
+#ifndef isc_tpb_lock_timeout
+#define isc_tpb_lock_timeout 21
+#endif
+
+void FirebirdConnection::StartWriteTransaction(int64_t lock_timeout_s) {
+    std::vector<char> tpb = {
+        isc_tpb_version3,
+        isc_tpb_write,
+        isc_tpb_read_committed,
+        isc_tpb_rec_version,
+    };
+    if (lock_timeout_s > 0) {
+        tpb.push_back(isc_tpb_wait);
+        // Length-prefixed little-endian integer.
+        tpb.push_back(static_cast<char>(isc_tpb_lock_timeout));
+        tpb.push_back(4);
+        const uint32_t secs = static_cast<uint32_t>(lock_timeout_s);
+        for (int shift = 0; shift < 32; shift += 8) {
+            tpb.push_back(static_cast<char>((secs >> shift) & 0xFF));
+        }
+    } else {
+        tpb.push_back(isc_tpb_nowait);
+    }
+    ISC_STATUS status[20] = {};
+    if (tr_) {
+        isc_rollback_transaction(status, &tr_);
+        CheckStatus(status, "isc_rollback_transaction");
+        tr_ = 0;
+    }
+    in_snapshot_ = false;
+    in_write_ = false;
+    isc_start_transaction(status, &tr_, 1, &db_, static_cast<unsigned short>(tpb.size()), tpb.data());
+    if (NoteStatus(status)) {
+        tr_ = 0;
+        const std::string text = StatusText(status);
+        // Leave the connection on its default transaction if possible.
+        ISC_STATUS restore_status[20] = {};
+        StartReadOnlyTransaction(restore_status);
+        if (NoteStatus(restore_status)) {
+            tr_ = 0;
+        }
+        throw IOException("isc_start_transaction (read-write): " + text);
+    }
+    in_write_ = true;
+}
+
+void FirebirdConnection::CommitWrite() {
+    ISC_STATUS status[20] = {};
+    isc_commit_transaction(status, &tr_);
+    CheckStatus(status, "isc_commit_transaction");
+    tr_ = 0;
+    in_write_ = false;
+    StartReadOnlyTransaction();
+}
+
+void FirebirdConnection::RollbackWrite() {
+    ISC_STATUS status[20] = {};
+    if (tr_) {
+        isc_rollback_transaction(status, &tr_);
+        CheckStatus(status, "isc_rollback_transaction");
+    }
+    tr_ = 0;
+    in_write_ = false;
+    StartReadOnlyTransaction();
+}
+
+bool IsCreateDatabaseStatement(const std::string &sql) {
+    size_t i = 0;
+    const size_t n = sql.size();
+    // Skip whitespace and comments.
+    while (i < n) {
+        if (std::isspace(static_cast<unsigned char>(sql[i]))) {
+            ++i;
+        } else if (sql.compare(i, 2, "--") == 0) {
+            while (i < n && sql[i] != '\n') ++i;
+        } else if (sql.compare(i, 2, "/*") == 0) {
+            auto end = sql.find("*/", i + 2);
+            i = end == std::string::npos ? n : end + 2;
+        } else {
+            break;
+        }
+    }
+    auto word = [&](const char *w) {
+        const size_t len = std::strlen(w);
+        if (i + len > n) return false;
+        for (size_t k = 0; k < len; ++k) {
+            if (std::toupper(static_cast<unsigned char>(sql[i + k])) != w[k]) return false;
+        }
+        if (i + len < n && !std::isspace(static_cast<unsigned char>(sql[i + len]))) return false;
+        i += len;
+        while (i < n && std::isspace(static_cast<unsigned char>(sql[i]))) ++i;
+        return true;
+    };
+    return word("CREATE") && word("DATABASE");
+}
+
+void FirebirdCreateDatabase(const std::string &sql, int dialect) {
+    isc_db_handle db = 0;
+    isc_tr_handle tr = 0;
+    ISC_STATUS status[20] = {};
+    isc_dsql_execute_immediate(status, &db, &tr, 0, sql.c_str(), static_cast<unsigned short>(dialect),
+                               nullptr);
+    // The statement carries the password: never quote it.
+    if (status[0] == 1 && status[1] != 0) {
+        throw IOException("CREATE DATABASE failed: " + StatusText(status));
+    }
+    if (db) {
+        ISC_STATUS detach_status[20] = {};
+        isc_detach_database(detach_status, &db);
+    }
 }
 
 std::unique_ptr<FirebirdStatement> FirebirdConnection::OpenCursor(const std::string &sql) {
@@ -1314,6 +1427,51 @@ void FirebirdStatement::ExecuteCursor(const std::string &sql_for_error) {
     ISC_STATUS status[20] = {};
     isc_dsql_execute(status, &conn_.tr(), &stmt_, 1, nullptr);
     conn_.CheckStatus(status, "isc_dsql_execute:\n" + sql_for_error);
+}
+
+void FirebirdStatement::ExecuteNoCursor(const std::string &sql_for_error) {
+    ISC_STATUS status[20] = {};
+    isc_dsql_execute(status, &conn_.tr(), &stmt_, 1, nullptr);
+    conn_.CheckStatus(status, "isc_dsql_execute:\n" + sql_for_error);
+}
+
+int64_t FirebirdStatement::RecordsAffected() {
+    char items[] = {isc_info_sql_records, isc_info_end};
+    char buf[128] = {};
+    ISC_STATUS status[20] = {};
+    isc_dsql_sql_info(status, &stmt_, static_cast<short>(sizeof(items)), items,
+                      static_cast<short>(sizeof(buf)), buf);
+    if (conn_.NoteStatus(status) || buf[0] != isc_info_sql_records) {
+        return 0;
+    }
+    // Reply: isc_info_sql_records, 2-byte length, then sub-items
+    // (isc_info_req_*_count, 2-byte length, little-endian value) up to
+    // isc_info_end.
+    auto le = [&](size_t pos, unsigned len) {
+        int64_t v = 0;
+        for (unsigned k = 0; k < len && pos + k < sizeof(buf); ++k) {
+            v |= static_cast<int64_t>(static_cast<unsigned char>(buf[pos + k])) << (8 * k);
+        }
+        return v;
+    };
+    const size_t total = static_cast<size_t>(le(1, 2));
+    size_t pos = 3;
+    const size_t end = std::min(sizeof(buf), 3 + total);
+    int64_t affected = 0;
+    while (pos + 3 <= end) {
+        const auto item = static_cast<unsigned char>(buf[pos]);
+        if (item == isc_info_end) {
+            break;
+        }
+        const unsigned len = static_cast<unsigned>(le(pos + 1, 2));
+        const int64_t value = le(pos + 3, len);
+        if (item == isc_info_req_insert_count || item == isc_info_req_update_count ||
+            item == isc_info_req_delete_count) {
+            affected += value;
+        }
+        pos += 3 + len;
+    }
+    return affected;
 }
 
 bool FirebirdStatement::Fetch() {

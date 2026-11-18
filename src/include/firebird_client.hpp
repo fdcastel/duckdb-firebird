@@ -90,6 +90,15 @@ void ValidateMaxInlineBlobSize(int64_t bytes);
 // returns "" when the library doesn't export isc_get_client_version.
 std::string FirebirdClientVersion();
 
+// Runs a CREATE DATABASE statement (it names its own server, user and
+// password) through isc_dsql_execute_immediate without an attachment, then
+// detaches from the new database. Errors never quote the statement.
+void FirebirdCreateDatabase(const std::string &sql, int dialect);
+
+// True when `sql` starts with CREATE DATABASE, after whitespace and
+// comments. (CREATE SCHEMA, its old synonym, creates a schema on Firebird 6.)
+bool IsCreateDatabaseStatement(const std::string &sql);
+
 // Removes credentials from a message that may echo a connection string:
 // 'password=...' values, 'scheme://user:pass@' user info, and every
 // literal occurrence of `password`.
@@ -218,6 +227,28 @@ public:
     // cursor; rows are then read with Fetch().
     void ExecuteCursor(const std::string &sql_for_error);
 
+    // Executes a statement constructed with PrepareOnlyTag that opens no
+    // cursor (DML, DDL, EXECUTE PROCEDURE, EXECUTE BLOCK without SUSPEND).
+    void ExecuteNoCursor(const std::string &sql_for_error);
+
+    // Rows inserted + updated + deleted by the last execution
+    // (isc_info_sql_records), or 0 when the server reports none.
+    int64_t RecordsAffected();
+
+    // --- Input parameters (read-write prototype) ---------------------------
+    //
+    // Describes the statement's `?` parameters (isc_dsql_describe_bind),
+    // once. For text the character set is in character_set_id; for a BLOB
+    // the subtype is in sqlsubtype and the character set of a text BLOB in
+    // character_set_id.
+    const std::vector<FirebirdColumnDesc> &DescribeInput();
+    // The input descriptor DescribeInput() allocated; FirebirdParamEncoder
+    // points its entries at the encoded values before every execution.
+    XSQLDA *InputSqlda() { return in_sqlda_; }
+    // Executes with the current input values; opens no cursor.
+    void ExecuteWithInput(const std::string &sql_for_error);
+    FirebirdConnection &Connection() { return conn_; }
+
     // Returns false when no more rows are available.
     bool Fetch();
 
@@ -260,6 +291,8 @@ private:
     std::vector<short> indicators_;
     std::vector<short> in_indicators_;
     std::vector<FirebirdColumnDesc> columns_;
+    std::vector<FirebirdColumnDesc> in_params_;
+    bool input_described_ = false;
     // G5 — see RowWidthBytes()/BytesRead(). row_width_bytes_ is fixed at
     // AllocateBuffers time; bytes_read_ is mutable because ReadBlob() is
     // const (it is called through const-access paths in the value
@@ -460,6 +493,23 @@ public:
     void RestoreDefaultTransaction();
     bool InSnapshotTransaction() const { return in_snapshot_; }
 
+    // --- Write transaction (read-write prototype) --------------------------
+    //
+    // Replace the default read-only transaction with a read-write one:
+    // read committed, record versions, wait for locks up to
+    // lock_timeout_s seconds (0 = no wait). Commit/RollbackWrite end it and
+    // start the default read-only transaction again, so a connection is
+    // never pooled in write state. They throw on failure.
+    void StartWriteTransaction(int64_t lock_timeout_s);
+    void CommitWrite();
+    void RollbackWrite();
+    bool InWriteTransaction() const { return in_write_; }
+
+    // Creates a BLOB holding `bytes` in the current transaction and returns
+    // its id, to pass as a parameter value. `subtype` and `charset` are the
+    // target's (charset only matters for a text BLOB, subtype 1).
+    ISC_QUAD CreateBlob(const std::string &bytes, int16_t subtype, int16_t charset);
+
     // Database page size in bytes (isc_database_info / isc_info_page_size),
     // or 0 if the server did not answer. Needs no monitoring privileges.
     int64_t PageSize();
@@ -493,6 +543,7 @@ private:
     isc_tr_handle tr_ = 0;
     int64_t id_ = 0;
     bool in_snapshot_ = false;
+    bool in_write_ = false;
     std::atomic<bool> broken_{false};
 
     void Attach();

@@ -14,7 +14,23 @@ struct FirebirdAttachHandle {
     Catalog *catalog = nullptr;
     NoneEncoding none_encoding = NoneEncoding::WIN1252;
     bool numeric_widen_int64 = false;
+    // ATTACH ... (TYPE firebird, READ_WRITE)
+    bool write_enabled = false;
+    // ATTACH ... (READ_ONLY), or a read-only DuckDB database
+    bool read_only = false;
+    int dialect = 3;
 };
+
+// The connection holding the current DuckDB transaction's Firebird write
+// transaction on this ATTACH, started on first use (read committed, record
+// versions, lock wait up to lock_timeout_s seconds, 0 = no wait). It is
+// committed or rolled back with the DuckDB transaction.
+FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &catalog,
+                                               int64_t lock_timeout_s);
+
+// firebird_execute(alias, sql): runs one statement that returns no rows in
+// the DuckDB transaction's Firebird write transaction (ATTACH ... READ_WRITE).
+TableFunction GetFirebirdExecuteFunction();
 
 // Resolves `alias` to a Firebird ATTACH (BinderException naming
 // `function_name` otherwise). Leases nothing.

@@ -91,3 +91,73 @@ connects to port 1). On upstream main it fails with
 
 - `firebird_query` takes an ATTACH alias only, not a connection string.
 - No named parameters: no `?` placeholders, no per-call `none_encoding`.
+
+## WP2: writable ATTACH and `firebird_execute(alias, sql)`
+
+```sql
+ATTACH 'user=SYSDBA;password=...;database=host:/path/db.fdb;charset=UTF8' AS fb (TYPE firebird, READ_WRITE);
+SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID = 1');
+-- rows_affected | executions
+```
+
+- **Opt-in (D1):** DuckDB's own `READ_WRITE` keyword (`READ_WRITE true`
+  works too). DuckDB passes it to the extension as an explicit access
+  mode, distinct from its default (automatic), so no custom option is
+  needed. Without it every write fails at bind, naming the option. A
+  `READ_ONLY` ATTACH refuses writes too.
+- **Transaction (D3, D5):** the first write of a DuckDB transaction starts
+  a Firebird read-write transaction (read committed, record versions,
+  wait for locks up to `firebird_write_lock_timeout` seconds, default 10,
+  `0` = no wait). DuckDB's commit commits it, and DuckDB's rollback (including
+  the one after an error) rolls it back. So autocommit gives one Firebird
+  transaction per DuckDB statement, and `BEGIN ... COMMIT` gives one
+  Firebird transaction for all its writes. Explicit transactions cost
+  nothing extra, so they were not refused (D5). A DuckDB transaction can
+  write to one attached database only (DuckDB's rule, applied through
+  `MetaTransaction::ModifyDatabase`).
+- **Connections:** writes use a second pool of the ATTACH, so a
+  connection that held a write transaction never serves a scan or
+  `firebird_query`. A write connection goes back to its pool after commit
+  or rollback, on a fresh read-only transaction. The write transaction is
+  independent of the transaction snapshot coordinator (upstream issue 104
+  work): reads, including reads in the same DuckDB transaction, do not see
+  uncommitted writes.
+- **Statements:** anything that returns no rows: DML, DDL, `EXECUTE
+  PROCEDURE`, EXECUTE BLOCK without SUSPEND. SELECTs are refused (use
+  `firebird_query`), and so are COMMIT, ROLLBACK and SET TRANSACTION:
+  transactions follow DuckDB's. `rows_affected` is what Firebird reports
+  through `isc_info_sql_records` (inserted + updated + deleted, including
+  the statements inside an EXECUTE BLOCK); `executions` is 1.
+- **DDL:** allowed and committed with the transaction. The ATTACH's
+  catalog is not refreshed: a table created this way does not appear
+  under `fb.main` until the database is attached again (`firebird_query`
+  can read it at once).
+- **CREATE DATABASE:** a statement starting with `CREATE DATABASE` runs
+  through `isc_dsql_execute_immediate` without an attachment (as isql
+  does) and creates the database it names, with the user and password it
+  names. It needs a READ_WRITE ATTACH like any write; that ATTACH's
+  transaction is not involved. Its errors don't quote the statement,
+  since the statement carries a password.
+
+Tests: `test/sql/firebird_execute.test` (Firebird 3/4/5; two DuckDB
+connections):
+- the opt-in and READ_ONLY are enforced;
+- an autocommit write is visible to another connection, and a
+  `BEGIN ... COMMIT` write only after the COMMIT;
+- ROLLBACK, and an error inside the transaction, leave nothing;
+- a statement that fails half-way leaves none of its own changes;
+- EXECUTE BLOCK (2 rows affected), EXECUTE PROCEDURE and DDL run;
+- SELECT and COMMIT are refused;
+- a row lock held by another connection gives "update conflicts with
+  concurrent update" after the lock timeout, not a hang;
+- the read pool is still read-only afterwards.
+
+`test/sql/firebird_execute_create_db.test` covers CREATE DATABASE: the
+database exists afterwards, the error doesn't quote the statement, and
+the opt-in is required. It needs `FIREBIRD_RW_CREATE_PREFIX`, the server
+and directory for new databases.
+
+### Gaps
+
+- No telemetry record for `firebird_execute`.
+- Reads don't see the uncommitted writes of their own DuckDB transaction.
