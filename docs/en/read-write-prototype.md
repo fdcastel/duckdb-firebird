@@ -310,3 +310,52 @@ about 13,200 rows/s (one rough run, machine not otherwise measured).
 - The ATTACH's catalog is read-only metadata: CREATE TABLE, ALTER, DROP,
   UPDATE and DELETE through `fb.main` are not supported (WP7 sizes UPDATE
   and DELETE).
+
+## WP7 (sizing only): `UPDATE` / `DELETE` through `fb.main`
+
+Not implemented. This is an estimate of what it takes and what changes.
+
+**What blocks it today.** DuckDB binds UPDATE and DELETE only on a scan
+that names its table (`LogicalGet::GetTable()`, filled by the table
+function's `get_bind_info`). `firebird_scan` has none, hence "Can only
+delete from base table" / "Can only update base table". A throwaway spike
+(not committed) registered `get_bind_info` returning the ATTACH's
+`FirebirdTableEntry`. With it, `DELETE FROM fb.main.T WHERE ...` and
+`UPDATE ...` bound and reached the catalog's `PlanDelete` / `PlanUpdate`
+(which still throw). Ordinary SELECTs were unaffected: DuckDB then only
+reads the table's name and statistics (none).
+
+**What has to be built** (rough C++ line counts):
+
+| Piece | Lines |
+|---|---|
+| `get_bind_info` + a table pointer in the bind data (spike-proven) | ~15 |
+| `rowid` = `RDB$DB_KEY` (8 bytes = one `row_t`) for base tables: the query builder projects it instead of today's `CAST(NULL AS BIGINT)`, the fetch copies the 8 bytes | ~40 |
+| Scans feeding an UPDATE/DELETE run on the DuckDB transaction's write connection (DB_KEY is only stable inside one transaction): one partition, no shared or transaction snapshot | ~80 |
+| Materialize those scans before the first write (as postgres' `MaterializePostgresScans`), so a cursor never reads rows the same statement has changed | ~30 |
+| `PlanUpdate` / `PlanDelete` sinks: `UPDATE "T" SET "C" = ?, ... WHERE RDB$DB_KEY = ?` / `DELETE ... WHERE RDB$DB_KEY = ?` per row, SET values through the WP3 encoder, DB_KEY as an 8-byte OCTETS parameter | ~200 |
+| Encoder: a raw 8-byte OCTETS kind for the DB_KEY | ~20 |
+| **Total** | **~400 C++ + ~250 lines of tests** |
+
+**What changes or breaks:**
+- `SELECT rowid FROM fb.main.T` returns the DB_KEY instead of NULL. For
+  views (a DB_KEY of 8 bytes per base table) it stays NULL, and
+  UPDATE/DELETE on a view is refused.
+- A scan under UPDATE/DELETE gives up PK/DB_KEY partitioning and the
+  transaction snapshot, and reads in the write transaction (read
+  committed). It sees its own transaction's earlier writes, unlike every
+  other scan.
+- Each row is one round trip, like WP4. `DELETE FROM fb.main.T WHERE
+  <pushable filter>` runs N statements, where `firebird_execute` would run
+  one statement on the server. A faster design would send the whole
+  UPDATE/DELETE when DuckDB's plan is a single filtered scan; that needs
+  plan inspection beyond the catalog hooks.
+- A row deleted or changed by another transaction between the scan and
+  the write gives 0 rows affected for its DB_KEY. Detecting that costs the
+  per-row records count (one more round trip), as `count_rows` does.
+- RETURNING and MERGE INTO stay out of scope.
+
+**Recommendation:** feasible in about 1 to 1.5 days with tests. It is
+worth doing only if DWDb needs UPDATE/DELETE written as DuckDB SQL over
+`fb.main`. Otherwise `firebird_execute` already covers both (one
+server-side statement, or per-row with `source`), and faster.
