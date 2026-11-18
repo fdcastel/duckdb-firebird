@@ -1,4 +1,5 @@
 #include "firebird_client.hpp"
+#include "firebird_observability.hpp"
 #include "firebird_client_loader.hpp"
 
 #include <cctype>
@@ -41,6 +42,12 @@
 #define fb_interpret                 (::duckdb::fbapi().fb_interpret)
 #define isc_database_info            (::duckdb::fbapi().isc_database_info)
 #define isc_get_client_version       (::duckdb::fbapi().isc_get_client_version)
+#define isc_dsql_sql_info            (::duckdb::fbapi().isc_dsql_sql_info)
+#define isc_commit_transaction       (::duckdb::fbapi().isc_commit_transaction)
+#define isc_commit_retaining         (::duckdb::fbapi().isc_commit_retaining)
+#define isc_dsql_execute_immediate   (::duckdb::fbapi().isc_dsql_execute_immediate)
+#define isc_create_blob2             (::duckdb::fbapi().isc_create_blob2)
+#define isc_put_segment              (::duckdb::fbapi().isc_put_segment)
 
 namespace duckdb {
 
@@ -154,10 +161,34 @@ FirebirdConnectionInfo FirebirdConnectionInfo::Parse(const std::string &conn_str
         return info;
     }
 
-    // Key=value form (semicolon separated).
-    if (conn_str.find('=') != std::string::npos &&
-        conn_str.find(';') != std::string::npos) {
-        std::stringstream ss(conn_str);
+    // Key=value form (semicolon separated). The space-separated spelling
+    // used in the function examples ('database=... user=... password=...')
+    // is the same form: every whitespace-separated token is a known
+    // key=value pair. Without this it fell through to the bare-path case,
+    // and the whole string, password included, became the database name.
+    std::string kv_str = conn_str;
+    if (kv_str.find('=') != std::string::npos && kv_str.find(';') == std::string::npos) {
+        std::stringstream ws(kv_str);
+        std::string token, joined;
+        bool all_known = true, any = false;
+        while (ws >> token) {
+            auto eq = token.find('=');
+            const std::string key = eq == std::string::npos ? std::string() : token.substr(0, eq);
+            if (key != "database" && key != "user" && key != "password" && key != "charset" &&
+                key != "role" && key != "dialect" && key != "none_encoding" && key != "none_pushdown") {
+                all_known = false;
+                break;
+            }
+            joined += token + ";";
+            any = true;
+        }
+        if (all_known && any) {
+            kv_str = joined;
+        }
+    }
+    if (kv_str.find('=') != std::string::npos &&
+        kv_str.find(';') != std::string::npos) {
+        std::stringstream ss(kv_str);
         std::string kv;
         while (std::getline(ss, kv, ';')) {
             auto eq = kv.find('=');
@@ -380,6 +411,19 @@ static void DpbAppend(std::vector<char> &dpb, char tag, const std::string &val) 
 
 std::unique_ptr<FirebirdConnection> FirebirdConnectionPool::Acquire() {
     return AcquireWithInfo().conn;
+}
+
+std::string RedactConnectionSecrets(std::string message, const std::string &password) {
+    message = SanitizeErrorMessage(std::move(message));
+    if (!password.empty()) {
+        const std::string redacted = "<redacted>";
+        size_t pos = 0;
+        while ((pos = message.find(password, pos)) != std::string::npos) {
+            message.replace(pos, password.size(), redacted);
+            pos += redacted.size();
+        }
+    }
+    return message;
 }
 
 // Redact every occurrence of the connection password (both the
@@ -613,7 +657,13 @@ void FirebirdConnection::Attach() {
                             static_cast<short>(dpb.size()),
                             dpb.data());
     }
-    Check(status, "isc_attach_database(" + info_.database + ")");
+    // The database string, and with it any error that names it, can carry
+    // a password (a connection string that was not parsed as key=value).
+    if (status[0] == 1 && status[1] != 0) {
+        throw IOException(RedactConnectionSecrets(
+            "isc_attach_database(" + info_.database + "): " + StatusText(status),
+            info_.password));
+    }
 }
 
 void FirebirdConnection::StartReadOnlyTransaction(ISC_STATUS *status) {
@@ -1217,6 +1267,53 @@ void FirebirdStatement::AllocateBuffers() {
         v.sqlind  = &indicators_[i];
     }
     row_width_bytes_ = width;
+}
+
+int FirebirdStatement::StatementType() {
+    char items[] = {isc_info_sql_stmt_type};
+    char buf[16] = {};
+    ISC_STATUS status[20] = {};
+    isc_dsql_sql_info(status, &stmt_, static_cast<short>(sizeof(items)), items,
+                      static_cast<short>(sizeof(buf)), buf);
+    if (conn_.NoteStatus(status) || buf[0] != isc_info_sql_stmt_type) {
+        return -1;
+    }
+    // Reply: item byte, 2-byte little-endian length, little-endian value.
+    const unsigned len = static_cast<unsigned char>(buf[1]) |
+                         (static_cast<unsigned>(static_cast<unsigned char>(buf[2])) << 8);
+    if (len == 0 || len > 4) {
+        return -1;
+    }
+    int value = 0;
+    for (unsigned i = 0; i < len; ++i) {
+        value |= static_cast<int>(static_cast<unsigned char>(buf[3 + i])) << (8 * i);
+    }
+    return value;
+}
+
+void FirebirdStatement::CoerceOutputToText(idx_t col, int16_t len) {
+    XSQLVAR &v = out_sqlda_->sqlvar[col];
+    row_width_bytes_ -= static_cast<int64_t>(buffers_[col].size());
+    buffers_[col].assign(static_cast<size_t>(len) + sizeof(ISC_USHORT), 0);
+    row_width_bytes_ += static_cast<int64_t>(buffers_[col].size());
+    v.sqltype    = SQL_VARYING | 1;
+    v.sqlsubtype = 0;
+    v.sqlscale   = 0;
+    v.sqllen     = len;
+    v.sqldata    = buffers_[col].data();
+    v.sqlind     = &indicators_[col];
+    FirebirdColumnDesc &c = columns_[col];
+    c.sqltype          = SQL_VARYING;
+    c.sqlsubtype       = 0;
+    c.sqlscale         = 0;
+    c.sqllen           = len;
+    c.character_set_id = -1;  // plain ASCII digits: no NONE handling
+}
+
+void FirebirdStatement::ExecuteCursor(const std::string &sql_for_error) {
+    ISC_STATUS status[20] = {};
+    isc_dsql_execute(status, &conn_.tr(), &stmt_, 1, nullptr);
+    conn_.CheckStatus(status, "isc_dsql_execute:\n" + sql_for_error);
 }
 
 bool FirebirdStatement::Fetch() {

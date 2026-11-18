@@ -34,6 +34,14 @@ struct FirebirdClientApi {
     decltype(&::fb_interpret)                fb_interpret;
     decltype(&::isc_database_info)           isc_database_info;
     decltype(&::isc_get_client_version)      isc_get_client_version;
+    // Read-write prototype: statement info, commits, blob writes and
+    // statements without a statement handle (CREATE DATABASE).
+    decltype(&::isc_dsql_sql_info)           isc_dsql_sql_info;
+    decltype(&::isc_commit_transaction)      isc_commit_transaction;
+    decltype(&::isc_commit_retaining)        isc_commit_retaining;
+    decltype(&::isc_dsql_execute_immediate) isc_dsql_execute_immediate;
+    decltype(&::isc_create_blob2)            isc_create_blob2;
+    decltype(&::isc_put_segment)             isc_put_segment;
 };
 
 // Resolve the Firebird client library (once per process) and return

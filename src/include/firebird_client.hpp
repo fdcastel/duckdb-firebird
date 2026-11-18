@@ -90,6 +90,11 @@ void ValidateMaxInlineBlobSize(int64_t bytes);
 // returns "" when the library doesn't export isc_get_client_version.
 std::string FirebirdClientVersion();
 
+// Removes credentials from a message that may echo a connection string:
+// 'password=...' values, 'scheme://user:pass@' user info, and every
+// literal occurrence of `password`.
+std::string RedactConnectionSecrets(std::string message, const std::string &password);
+
 // Throws a BinderException if `charset` would deliver bytes DuckDB's
 // UTF-8-only string vectors can't ingest. UTF8, UTF-8, NONE, OCTETS pass;
 // anything else is rejected with a hint to keep the default UTF8 (Firebird
@@ -198,6 +203,20 @@ public:
     void OverrideCharsetId(idx_t col, int16_t cs_id) {
         columns_[col].character_set_id = cs_id;
     }
+
+    // Statement type of a prepared statement (isc_info_sql_stmt_select,
+    // isc_info_sql_stmt_exec_procedure, ...), or -1 when the server did not
+    // answer.
+    int StatementType();
+
+    // Before the first Fetch(): receive column `col` as VARCHAR(len); the
+    // server converts the value (used for DECFLOAT, which has no decoder
+    // here). The column then reads as text without a character set.
+    void CoerceOutputToText(idx_t col, int16_t len);
+
+    // Executes a statement constructed with PrepareOnlyTag, opening its
+    // cursor; rows are then read with Fetch().
+    void ExecuteCursor(const std::string &sql_for_error);
 
     // Returns false when no more rows are available.
     bool Fetch();

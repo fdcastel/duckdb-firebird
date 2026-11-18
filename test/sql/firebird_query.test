@@ -1,0 +1,216 @@
+# name: test/sql/firebird_query.test
+# description: firebird_query(alias, sql) - a SELECT sent to Firebird as written
+# group: [firebird]
+#
+# Needs the read-write prototype fixture (scripts/fixture_rw.sql) in its own
+# database, named by FIREBIRD_RW_DB (Firebird 3, 4 and 5).
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird);
+
+# --- Every Firebird 3 type family reads as the scan reads it ----------------
+
+query I
+SELECT count(*) FROM firebird_query('rw', 'SELECT * FROM RW_TYPES');
+----
+4
+
+# Same column names and DuckDB types as a scan of the table.
+query I
+SELECT count(*) FROM (
+    (SELECT column_name, column_type
+       FROM (DESCRIBE SELECT * FROM firebird_query('rw', 'SELECT * FROM RW_TYPES')))
+    EXCEPT
+    (SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM rw.main.RW_TYPES)));
+----
+0
+
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM firebird_query('rw', 'SELECT * FROM RW_TYPES'));
+----
+19
+
+# Same values, both ways (NULLs, extremes, dates before 1900, empty strings,
+# CHARACTER SET NONE bytes, text and binary BLOBs).
+query I
+SELECT count(*) FROM (
+    SELECT * FROM firebird_query('rw', 'SELECT * FROM RW_TYPES')
+    EXCEPT ALL
+    SELECT * FROM rw.main.RW_TYPES);
+----
+0
+
+query I
+SELECT count(*) FROM (
+    SELECT * FROM rw.main.RW_TYPES
+    EXCEPT ALL
+    SELECT * FROM firebird_query('rw', 'SELECT * FROM RW_TYPES'));
+----
+0
+
+# The values themselves, so the comparison above cannot pass on two equally
+# wrong readers.
+query IIIIIII
+SELECT C_NUM9_3, C_NUM18_4, C_DATE, C_TS, C_VARCHAR, C_VARCHAR_NONE, C_BLOB_TEXT
+  FROM firebird_query('rw', 'SELECT * FROM RW_TYPES WHERE ID IN (1, 2) ORDER BY ID');
+----
+1.500	12345.6789	2026-11-18	2026-11-18 13:45:30.1234	Ação ñ €	Ação	Ação ñ €
+-0.001	-922337203685477.5808	1850-06-01	1899-12-31 23:59:59.9999	(empty)	(empty)	(empty)
+
+query IIII
+SELECT C_SMALLINT, C_BIGINT, C_BOOL, C_BLOB_BIN
+  FROM firebird_query('rw', 'SELECT * FROM RW_TYPES WHERE ID = 2');
+----
+-32768	-9223372036854775808	false	(empty)
+
+query II
+SELECT C_BIGINT, C_NUM18_4 FROM firebird_query('rw', 'SELECT C_BIGINT, C_NUM18_4 FROM RW_TYPES WHERE ID = 4');
+----
+9223372036854775807	922337203685477.5807
+
+query I
+SELECT C_BLOB_BIN FROM firebird_query('rw', 'SELECT C_BLOB_BIN FROM RW_TYPES WHERE ID = 1');
+----
+\x00\xFF\x10
+
+# --- Firebird SQL as written: joins, aggregates, CTEs, procedures -----------
+
+query II
+SELECT B, N FROM firebird_query('rw',
+    'SELECT t.C_BOOL AS B, COUNT(*) AS N
+       FROM RW_TYPES t JOIN RW_TYPES u ON u.ID = t.ID
+      GROUP BY t.C_BOOL ORDER BY 1');
+----
+NULL	2
+false	1
+true	1
+
+query I
+SELECT S FROM firebird_query('rw',
+    'WITH RECURSIVE R (N) AS (
+         SELECT 1 FROM RDB$DATABASE
+         UNION ALL
+         SELECT N + 1 FROM R WHERE N < 5)
+     SELECT SUM(N) AS S FROM R');
+----
+15
+
+query II
+SELECT I, SQ FROM firebird_query('rw', 'SELECT I, SQ FROM SP_SEQ(4)');
+----
+1	1
+2	4
+3	9
+4	16
+
+# Firebird-only syntax that DuckDB could not parse
+query I
+SELECT X FROM firebird_query('rw', 'SELECT FIRST 1 SKIP 1 ID AS X FROM RW_TYPES ORDER BY ID');
+----
+2
+
+# Unnamed and duplicate column names get usable DuckDB names
+query I
+SELECT count(DISTINCT column_name) FROM (DESCRIBE SELECT * FROM firebird_query('rw', 'SELECT 1, 1, ID, ID FROM RW_TYPES'));
+----
+4
+
+# --- Empty result -----------------------------------------------------------
+
+query II
+SELECT * FROM firebird_query('rw', 'SELECT ID, C_VARCHAR FROM RW_TYPES WHERE 1 = 0');
+----
+
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM firebird_query('rw', 'SELECT ID, C_VARCHAR FROM RW_TYPES WHERE 1 = 0'));
+----
+2
+
+# --- Arguments may be constant expressions -----------------------------------
+
+statement ok
+SET VARIABLE fb_alias = 'rw';
+
+statement ok
+SET VARIABLE src_query = 'SELECT COUNT(*) AS N FROM RW_TYPES WHERE C_BOOL = TRUE';
+
+query I
+SELECT N FROM firebird_query(getvariable('fb_alias'), getvariable('src_query'));
+----
+1
+
+query I
+SELECT N FROM firebird_query('r' || 'w', 'SELECT COUNT(*) AS N FROM ' || 'RW_TYPES');
+----
+4
+
+# --- Only SELECTs; the transaction is read-only -------------------------------
+
+statement error
+SELECT * FROM firebird_query('rw', 'UPDATE RW_TYPES SET C_INTEGER = 0');
+----
+only SELECT statements are accepted
+
+statement error
+SELECT * FROM firebird_query('rw', 'EXECUTE PROCEDURE SP_SEQ(2)');
+----
+only SELECT statements are accepted
+
+statement error
+SELECT * FROM firebird_query('rw', 'SELECT * FROM SP_WRITE');
+----
+read-only transaction
+
+query I
+SELECT count(*) FROM rw.main.RW_LOG;
+----
+0
+
+# --- Errors -------------------------------------------------------------------
+
+statement error
+SELECT * FROM firebird_query('rw', 'SELECT NO_SUCH_COLUMN FROM RW_TYPES');
+----
+NO_SUCH_COLUMN
+
+statement error
+SELECT * FROM firebird_query('no_such_alias', 'SELECT 1 FROM RDB$DATABASE');
+----
+firebird_query: no attached catalog named 'no_such_alias'
+
+statement error
+SELECT * FROM firebird_query('rw', NULL);
+----
+requires two non-NULL arguments
+
+# --- Telemetry: one record, the SQL as sent -----------------------------------
+
+statement ok
+SELECT * FROM firebird_query('rw', 'SELECT I FROM SP_SEQ(7)');
+
+query III
+SELECT remote_sql, rows_read, partitions FROM firebird_last_query();
+----
+SELECT I FROM SP_SEQ(7)	7	1
+
+statement ok
+SET firebird_query_log_size = 10;
+
+statement ok
+SELECT * FROM firebird_query('rw', 'SELECT I FROM SP_SEQ(3)');
+
+query II
+SELECT remote_sql, rows_read FROM firebird_query_log() LIMIT 1;
+----
+SELECT I FROM SP_SEQ(3)	3
+
+# --- The pool's connections stay usable afterwards ---------------------------
+
+query I
+SELECT count(*) FROM rw.main.RW_TYPES;
+----
+4
