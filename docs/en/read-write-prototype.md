@@ -281,6 +281,11 @@ INSERT INTO fb.main.CUSTOMER (NAME, ID) VALUES ('Fa', 6);
   here, because the ATTACH declares no unique keys. `DEFAULT` inside a
   VALUES list becomes NULL: DuckDB fills it from the column defaults it
   knows, and the ATTACH doesn't declare Firebird's.
+- **DuckDB v2.0 (built, not tested):** v2.0 binds DEFAULT VALUES with
+  every column mapped to a NULL value, so the refusal above doesn't
+  fire. The INSERT then sends NULL for every column (seen in CI: Firebird
+  refused the NULL primary key). The prototype tests run on DuckDB 1.5.6
+  only.
 - **Errors:** the first failing row stops the INSERT with "row N failed:
   <Firebird error>". The DuckDB transaction then rolls back, and with it
   every row of the INSERT.

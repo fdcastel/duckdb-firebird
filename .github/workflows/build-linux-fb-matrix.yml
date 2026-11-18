@@ -410,15 +410,19 @@ jobs:
           # exported above); self-skips on FB3.
           ./build/release/test/unittest test/sql/firebird_type_compat.test
           # Read-write prototype (firebird_query; FB4+ types on FB4/FB5 only
-          # through FIREBIRD_RW4_DB) and connection-error redaction.
-          ./build/release/test/unittest test/sql/firebird_query.test
-          ./build/release/test/unittest test/sql/firebird_query_fb4.test
-          ./build/release/test/unittest test/sql/firebird_secrets.test
-          ./build/release/test/unittest test/sql/firebird_execute.test
-          ./build/release/test/unittest test/sql/firebird_execute_create_db.test
-          ./build/release/test/unittest test/sql/firebird_execute_source.test
-          ./build/release/test/unittest test/sql/firebird_execute_source_fb4.test
-          ./build/release/test/unittest test/sql/firebird_insert.test
+          # through FIREBIRD_RW4_DB) and connection-error redaction. The
+          # prototype targets DuckDB 1.5.6: on the v2.0 leg it is built,
+          # not tested.
+          if [ "${{ matrix.duckdb }}" = "v1.5.6" ]; then
+            ./build/release/test/unittest test/sql/firebird_query.test
+            ./build/release/test/unittest test/sql/firebird_query_fb4.test
+            ./build/release/test/unittest test/sql/firebird_secrets.test
+            ./build/release/test/unittest test/sql/firebird_execute.test
+            ./build/release/test/unittest test/sql/firebird_execute_create_db.test
+            ./build/release/test/unittest test/sql/firebird_execute_source.test
+            ./build/release/test/unittest test/sql/firebird_execute_source_fb4.test
+            ./build/release/test/unittest test/sql/firebird_insert.test
+          fi
 
       - name: Firebird 4 client against the Firebird 5 server (inline_blobs_unavailable)
         # One Firebird 5 leg is enough: the inline-blob decision in
