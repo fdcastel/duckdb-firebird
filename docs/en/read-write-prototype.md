@@ -161,3 +161,93 @@ and directory for new databases.
 
 - No telemetry record for `firebird_execute`.
 - Reads don't see the uncommitted writes of their own DuckDB transaction.
+
+## WP3: parameter encoder and `firebird_execute(..., source := ...)`
+
+```sql
+CALL firebird_execute('fb',
+    $$EXECUTE BLOCK (ID INTEGER = ?, NAME VARCHAR(40) = ?, CITY VARCHAR(30) = ?) AS
+      BEGIN UPDATE OR INSERT INTO CUSTOMER (ID, NAME, CITY) VALUES (:ID, :NAME, :CITY) MATCHING (ID); END$$,
+    source := 'SELECT id, name, city FROM staging_customers',
+    commit_every := 10000);
+-- rows_affected | executions
+```
+
+- **Source (D2):** a DuckDB query string, run on its own DuckDB
+  connection and read as a stream. Column i of each row is parameter i
+  (`?`, in text order). The column count must match the parameter count
+  (checked at bind, by preparing both). Because the source runs on its own
+  connection, it sees committed DuckDB data and tables of the database,
+  but not the calling connection's TEMP tables or uncommitted changes.
+- **Execution:** the statement is prepared and its parameters described
+  once; then one `isc_dsql_execute` per source row, in the DuckDB
+  transaction's write transaction. `commit_every = N` commits every N
+  executions; 0 (default) commits with the DuckDB transaction.
+  `count_rows := false` skips the per-row `isc_info_sql_records` round
+  trip and returns `rows_affected` NULL.
+- **Errors:** the first failing row stops the call. The message names the
+  source row and what is kept: nothing (rolled back with the DuckDB
+  transaction), or source rows 1 to K when `commit_every` committed them.
+- **Encoder (`FirebirdParamEncoder`, D6):** each value travels in a
+  Firebird type that represents it exactly, and the server converts it to
+  the parameter's declared type with its own rules. Rounding, overflow
+  and truncation are therefore exactly what the same literal in the SQL
+  text gets.
+  - Integers go as BIGINT. A DECIMAL(p,s) goes as a BIGINT with scale s,
+    so 1.5 lands in NUMERIC(9,3) as 1.500. A 128-bit value goes as INT128
+    when the parameter is INT128; otherwise as a scaled BIGINT when it
+    fits (trailing zero decimals dropped), else as text. Firebird 3
+    overflows converting text with more digits than its target holds.
+  - FLOAT, DOUBLE, BOOLEAN, DATE, TIME and TIMESTAMP go in their own
+    types. TIME/TIMESTAMP WITH TIME ZONE go as UTC with the GMT zone, or
+    as the UTC wall-clock time when the parameter has no zone. Firebird
+    keeps 1/10000 s, so digits below 100 µs are dropped.
+  - VARCHAR, and anything without a native form (DECFLOAT targets, UUID,
+    ...), goes as VARCHAR in the parameter's character set. A value longer
+    than the parameter is an error, never silent truncation.
+  - CHARACTER SET NONE targets get `none_encoding` bytes (WIN1252 or
+    ISO-8859-1; STRICT and BLOB send UTF-8 as is). A character the
+    encoding can't hold is an error.
+  - Values for BLOB parameters become BLOBs created in the write
+    transaction, in 32 KB segments, of any size.
+  - Every execution resets every field of every parameter: type, length,
+    data pointer and NULL indicator. A value after a NULL is never sent as
+    NULL (the ODBC sticky-NULL defect).
+- **`BindInputParameters`** (the scan's `?` filters) is replaced by the
+  same encoder. Its old code ignored the parameter's scale: it copied the
+  value rounded to an integer as the scaled integer, so 1.5 for a
+  NUMERIC(9,3) parameter would have been sent as 2, meaning 0.002. It had
+  no BLOB, INT128, DECFLOAT or time zone support either. The scan's
+  pushdown only binds BOOLEAN, integer, FLOAT/DOUBLE, VARCHAR, DATE, TIME
+  and TIMESTAMP values, never DECIMAL (`IsBindableType`), so scans were
+  not affected in practice.
+
+Tests: `test/sql/firebird_execute_source.test` (Firebird 3/4/5) reads
+back stored values, not row counts:
+- every Firebird 3 type family round-trips from `RW_TYPES` to `RW_TARGET`
+  (both-way `EXCEPT ALL` = 0), and the NONE column stores WIN1252 bytes;
+- sticky NULLs: NULL, value, NULL, value, NULL on NUMERIC(9,3), BIGINT,
+  INTEGER, DOUBLE, VARCHAR, DATE, BOOLEAN and text BLOB;
+- 1.5 into NUMERIC(9,3) from DECIMAL(2,1), DECIMAL(18,6), DECIMAL(38,10),
+  DOUBLE, INTEGER and VARCHAR;
+- more digits than the column store what the same literal stores;
+- NUMERIC(18,4) limits and negative scaled values;
+- overflow names the row and keeps nothing;
+- 140 KB text and 80 KB binary BLOBs; an over-long VARCHAR fails, and so
+  does a character WIN1252 can't hold;
+- the upsert example verbatim, run twice (insert, then update);
+- an error in row 4 keeps nothing, or rows 1 to 2 with `commit_every = 2`;
+- a source reading the table it writes, with and without
+  `commit_every = 1`: the source reads only committed rows (3 inserted
+  each time, no feedback loop on this size; on Firebird 3 a long source
+  cursor could see rows committed by `commit_every` while it reads);
+- the binding checks and `count_rows := false`.
+
+`test/sql/firebird_execute_source_fb4.test` covers INT128,
+NUMERIC(38,6), DECFLOAT(16/34) and the time zone types, as a round trip
+and from DuckDB types.
+
+Negative controls (local builds, Firebird 5): with the NULL indicator not
+reset after a NULL, the round trip fails (the row after the all-NULL row
+differs). With the DECIMAL scale ignored, the first row fails with
+"numeric value is out of range".

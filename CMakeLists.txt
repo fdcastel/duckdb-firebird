@@ -58,6 +58,7 @@ set(EXTENSION_SOURCES
     src/firebird_explain_pushdown.cpp
     src/firebird_query_function.cpp
     src/firebird_execute.cpp
+    src/firebird_param_encoder.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

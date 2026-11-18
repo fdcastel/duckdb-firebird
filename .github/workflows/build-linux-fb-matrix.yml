@@ -416,6 +416,8 @@ jobs:
           ./build/release/test/unittest test/sql/firebird_secrets.test
           ./build/release/test/unittest test/sql/firebird_execute.test
           ./build/release/test/unittest test/sql/firebird_execute_create_db.test
+          ./build/release/test/unittest test/sql/firebird_execute_source.test
+          ./build/release/test/unittest test/sql/firebird_execute_source_fb4.test
 
       - name: Firebird 4 client against the Firebird 5 server (inline_blobs_unavailable)
         # One Firebird 5 leg is enough: the inline-blob decision in

@@ -302,11 +302,6 @@ private:
 
     void Prepare(const std::string &sql);
     void AllocateBuffers();
-    // Encodes `params` into the input XSQLDA buffers described by
-    // `isc_dsql_describe_bind`. Throws IOException on type mismatch
-    // or unsupported parameter type.
-    void BindInputParameters(const std::vector<Value> &params,
-                              const std::string &sql_for_error);
 };
 
 // Tunable knobs for the connection pool. All defaults reproduce the
