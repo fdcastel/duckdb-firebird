@@ -20,6 +20,7 @@
 
 #include <cctype>
 
+#include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/database_modification_type.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/attached_database.hpp"
@@ -219,7 +220,11 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         FirebirdParamEncoder encoder(stmt, bind.source_types, bind.attach.none_encoding);
 
         Connection con(*context.db);
-        auto result = con.SendQuery(bind.source);
+#ifdef FIREBIRD_DUCKDB_V2
+        auto result = con.Query(bind.source);  // v2.0: no SendQuery (built, not tested)
+#else
+        auto result = con.SendQuery(bind.source);  // streamed
+#endif
         if (result->HasError()) {
             throw InvalidInputException("%s: the source query failed: %s", kFunctionName, result->GetError());
         }

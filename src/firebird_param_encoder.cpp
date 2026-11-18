@@ -330,7 +330,7 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
     }
     case Wire::DATE: {
         const date_t d = value.GetValue<date_t>();
-        if (!Date::IsFinite(d)) {
+        if (d == date_t::infinity() || d == date_t::ninfinity()) {
             throw InvalidInputException("parameter %llu: infinite dates can't be sent to Firebird",
                                         static_cast<unsigned long long>(index + 1));
         }
@@ -365,7 +365,7 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
             ts = value.DefaultCastAs(LogicalType::TIMESTAMP).GetValue<timestamp_t>();
             break;
         }
-        if (!Timestamp::IsFinite(ts)) {
+        if (ts == timestamp_t::infinity() || ts == timestamp_t::ninfinity()) {
             throw InvalidInputException("parameter %llu: infinite timestamps can't be sent to Firebird",
                                         static_cast<unsigned long long>(index + 1));
         }

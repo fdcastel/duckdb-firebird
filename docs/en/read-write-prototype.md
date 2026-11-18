@@ -251,3 +251,62 @@ Negative controls (local builds, Firebird 5): with the NULL indicator not
 reset after a NULL, the round trip fails (the row after the all-NULL row
 differs). With the DECIMAL scale ignored, the first row fails with
 "numeric value is out of range".
+
+Cost of `rows_affected`: each count is one more round trip per row.
+100,000 rows into a two-column table on a local Firebird 5 (loopback
+TCP, one rough run) took 6.8 s with `count_rows := false` and 13.1 s with
+the default count.
+
+## WP4: `INSERT INTO fb.main.T ...`
+
+```sql
+ATTACH '...' AS fb (TYPE firebird, READ_WRITE);
+INSERT INTO fb.main.CUSTOMER SELECT id, name, city FROM staging_customers;
+INSERT INTO fb.main.CUSTOMER (NAME, ID) VALUES ('Fa', 6);
+```
+
+- `PlanInsert` builds a sink (`FIREBIRD_INSERT` in EXPLAIN) that prepares
+  `INSERT INTO "T" ("C1", ...) VALUES (?, ...)` once and executes it per
+  row with the WP3 encoder, in the WP2 write transaction. It returns the
+  row count like any INSERT.
+- **Columns:** DuckDB's binder casts the values to the ATTACH's column
+  types before they reach the sink, so no extra cast step is needed.
+  With a column list, only those columns are sent, and Firebird applies
+  its defaults, triggers and generators to the others. Without one, every
+  column is sent. A COMPUTED BY column then makes Firebird refuse the
+  INSERT; name the columns.
+- **Refused:** RETURNING and DEFAULT VALUES (both point to
+  `firebird_execute`), and an ATTACH without READ_WRITE or with
+  READ_ONLY. ON CONFLICT is refused by DuckDB's own binder before it gets
+  here, because the ATTACH declares no unique keys. `DEFAULT` inside a
+  VALUES list becomes NULL: DuckDB fills it from the column defaults it
+  knows, and the ATTACH doesn't declare Firebird's.
+- **Errors:** the first failing row stops the INSERT with "row N failed:
+  <Firebird error>". The DuckDB transaction then rolls back, and with it
+  every row of the INSERT.
+
+Tests: `test/sql/firebird_insert.test` (Firebird 3/4/5):
+- the opt-in and READ_ONLY are enforced;
+- INSERT ... SELECT from a scan of another Firebird table, every type
+  family exact (both-way `EXCEPT ALL` = 0);
+- inserts from a DuckDB table and from VALUES;
+- a column list leaves the other columns NULL; 1.5 lands in NUMERIC(9,3)
+  as 1.500, and NONE text is stored as WIN1252;
+- NULL into a NOT NULL column, and a duplicate key in row 2, give
+  Firebird's error and keep nothing;
+- RETURNING, DEFAULT VALUES and ON CONFLICT are refused;
+- `BEGIN ... COMMIT` is visible to another connection only after the
+  COMMIT, and ROLLBACK keeps nothing;
+- 20,000 rows, checked by count and sum.
+
+1,000,000 rows (`INSERT INTO fb.main.RW_LOG SELECT i, 'n' || i FROM
+range(1000000)`) took 75.6 s on a local Firebird 5 over loopback TCP,
+about 13,200 rows/s (one rough run, machine not otherwise measured).
+
+### Gaps
+
+- One round trip per row; no batching (the legacy API has none; IBatch is
+  OO API only).
+- The ATTACH's catalog is read-only metadata: CREATE TABLE, ALTER, DROP,
+  UPDATE and DELETE through `fb.main` are not supported (WP7 sizes UPDATE
+  and DELETE).
