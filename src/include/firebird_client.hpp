@@ -90,6 +90,9 @@ void ValidateMaxInlineBlobSize(int64_t bytes);
 // returns "" when the library doesn't export isc_get_client_version.
 std::string FirebirdClientVersion();
 
+// isc_interprete'd text of an error status vector.
+std::string FirebirdStatusText(const ISC_STATUS *status);
+
 // Removes credentials from a message that may echo a connection string:
 // 'password=...' values, 'scheme://user:pass@' user info, and every
 // literal occurrence of `password`.
@@ -239,6 +242,7 @@ public:
     // Executes with the current input values; opens no cursor.
     void ExecuteWithInput(const std::string &sql_for_error);
     FirebirdConnection &Connection() { return conn_; }
+    isc_stmt_handle &Handle() { return stmt_; }
 
     // Returns false when no more rows are available.
     bool Fetch();

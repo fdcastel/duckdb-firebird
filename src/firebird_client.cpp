@@ -972,6 +972,10 @@ int FirebirdConnection::EngineMajor() {
     return engine_major_;
 }
 
+std::string FirebirdStatusText(const ISC_STATUS *status) {
+    return StatusText(status);
+}
+
 std::unique_ptr<FirebirdStatement> FirebirdConnection::OpenCursor(const std::string &sql) {
     return make_uniq<FirebirdStatement>(*this, sql);
 }

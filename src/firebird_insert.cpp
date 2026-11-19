@@ -18,6 +18,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
 
+#include "firebird_batch.hpp"
 #include "firebird_client.hpp"
 #include "firebird_observability.hpp"
 #include "firebird_param_encoder.hpp"
@@ -43,7 +44,12 @@ const std::string &Str(const std::string &name) {
 struct FirebirdInsertGlobalState : public GlobalSinkState {
     std::unique_ptr<FirebirdStatement> stmt;
     std::unique_ptr<FirebirdParamEncoder> encoder;
-    int64_t rows = 0;  // rows inserted (executed)
+    std::unique_ptr<FirebirdBatchWriter> batch;  // Firebird 4+, when batch_size > 0
+    int64_t batch_size = 0;
+    int64_t rows = 0;   // rows inserted (executed)
+    int64_t added = 0;  // rows encoded
+    // Record counts the batches returned (batch mode only; -1 = not counted).
+    int64_t affected = -1;
     // For the telemetry record, made when the INSERT ends: a Firebird scan
     // in its source records itself while the INSERT runs.
     int64_t connection_id = -1;
@@ -93,7 +99,25 @@ public:
         state->connection_id = conn.Id();
         try {
             state->stmt = make_uniq<FirebirdStatement>(conn, sql_, FirebirdStatement::PrepareOnlyTag {});
-            state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_);
+            Value b;
+            if (context.TryGetCurrentSetting("firebird_write_batch_size", b) && !b.IsNull()) {
+                state->batch_size = b.GetValue<int64_t>();
+            }
+            if (state->batch_size > 0) {
+                state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_, true);
+                std::string why;
+                state->batch = FirebirdBatchWriter::TryCreate(conn, *state->stmt, *state->encoder,
+                                                              isc_info_sql_stmt_insert, true, &why);
+                if (!state->batch) {
+                    state->encoder.reset();
+                }
+            }
+            if (state->batch) {
+                state->affected = 0;  // a batch returns record counts at no extra cost
+            }
+            if (!state->encoder) {
+                state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_);
+            }
         } catch (std::exception &ex) {
             Fail(context, *state, "INSERT into Firebird table \"" + table_name_ + "\": " + ErrorData(ex).RawMessage());
         }
@@ -107,12 +131,26 @@ public:
         for (idx_t r = 0; r < chunk.size(); ++r) {
             try {
                 state.encoder->Encode(chunk, r, input_columns_);
-                state.stmt->ExecuteWithInput(sql_);
+                if (state.batch) {
+                    state.batch->Add();
+                } else {
+                    state.stmt->ExecuteWithInput(sql_);
+                }
             } catch (std::exception &ex) {
+                // The rows before it go first, so a failure among them is
+                // named, as one row at a time would.
+                const std::string error = ErrorData(ex).RawMessage();
+                Flush(context.client, state, t0);
                 AddTime(state, t0);
-                FailRow(context.client, state, state.rows + 1, ErrorData(ex).RawMessage());
+                FailRow(context.client, state, state.added + 1, error);
             }
-            ++state.rows;
+            ++state.added;
+            if (!state.batch) {
+                ++state.rows;
+            } else if (static_cast<int64_t>(state.batch->Pending()) >= state.batch_size ||
+                       state.batch->Full()) {
+                Flush(context.client, state, t0);
+            }
         }
         AddTime(state, t0);
         return SinkResultType::NEED_MORE_INPUT;
@@ -122,6 +160,9 @@ public:
                               OperatorSinkFinalizeInput &input) const override {
         auto &state = input.global_state.Cast<FirebirdInsertGlobalState>();
         auto writes = LockFirebirdWrites(context, catalog_);
+        const auto t0 = std::chrono::steady_clock::now();
+        Flush(context, state, t0);
+        AddTime(state, t0);
         UnpinFirebirdWrites(context, catalog_);
         Report(context, state, "");
         return SinkFinalizeType::READY;
@@ -133,12 +174,12 @@ public:
     }
 
     // The INSERT's telemetry record, made when it ends (success or error).
-    // Record counts would cost one round trip per row: rows_affected stays
-    // NULL.
+    // One row at a time, record counts would cost one round trip per row:
+    // rows_affected stays NULL.
     void Report(ClientContext &context, const FirebirdInsertGlobalState &state, const std::string &error) const {
         RecordFirebirdWrite(context, sql_, "insert", table_name_, state.connection_id);
         auto obs = GetObservabilityState(context);
-        obs->SetWriteResult("row", state.rows, -1);
+        obs->SetWriteResult(state.batch ? "batch" : "row", state.rows, state.affected);
         obs->AddFirebirdTimeUs(state.firebird_time_us);
         obs->SetTotalTimeUs(
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - state.started)
@@ -158,6 +199,30 @@ public:
                               const std::string &error) const {
         Fail(context, state,
              "INSERT into Firebird table \"" + table_name_ + "\": row " + std::to_string(row) + " failed: " + error);
+    }
+
+    // Sends the pending batch (no-op in the per-row mode).
+    void Flush(ClientContext &context, FirebirdInsertGlobalState &state,
+               std::chrono::steady_clock::time_point t0) const {
+        if (!state.batch || state.batch->Pending() == 0) {
+            return;
+        }
+        const int64_t first = state.rows;
+        auto res = state.batch->Execute();
+        state.rows += static_cast<int64_t>(res.executed);
+        if (state.affected >= 0) {
+            state.affected = res.affected < 0 ? -1 : state.affected + res.affected;
+        }
+        if (res.failed && res.whole_batch) {
+            AddTime(state, t0);
+            Fail(context, state,
+                 "INSERT into Firebird table \"" + table_name_ + "\": rows " + std::to_string(first + 1) + " to " +
+                     std::to_string(first + static_cast<int64_t>(res.sent)) + " (one batch) failed: " + res.error);
+        }
+        if (res.failed) {
+            AddTime(state, t0);
+            FailRow(context, state, first + static_cast<int64_t>(res.failed_index) + 1, res.error);
+        }
     }
 
     bool IsSink() const override {
