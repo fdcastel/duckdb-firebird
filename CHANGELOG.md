@@ -35,8 +35,14 @@
   and every row sets every parameter again, so a value after a NULL is
   never sent as NULL. `commit_every` commits every N rows; an error names
   the failing source row and what was kept.
+- `INSERT INTO fb.main.T ...` on an ATTACH opened with `READ_WRITE`: one
+  prepared `INSERT` run per row with the same parameter encoding, in the
+  DuckDB transaction's write transaction. Only the columns the INSERT
+  names are sent, so Firebird applies its own defaults, triggers and
+  generators to the rest (on DuckDB 1.5 and 2.0). `RETURNING`,
+  `DEFAULT VALUES` and `ON CONFLICT` are refused.
 - `firebird_last_query()` / `firebird_query_log()` gain four columns (25
-  in all): `operation` (`scan`, `query`, `execute`), and for writes
+  in all): `operation` (`scan`, `query`, `execute`, `insert`), and for writes
   `write_mode`, `rows_written` and `rows_affected`.
 
 ### Changed

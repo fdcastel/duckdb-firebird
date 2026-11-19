@@ -438,6 +438,7 @@ jobs:
           ./build/release/test/unittest test/sql/firebird_ddl_cache.test
           ./build/release/test/unittest test/sql/firebird_execute_source.test
           ./build/release/test/unittest test/sql/firebird_execute_source_fb4.test
+          ./build/release/test/unittest test/sql/firebird_insert.test
 
       - name: Writes commit when a client reads one row and closes (Python)
         # sqllogictest reads every result fully; this needs a real client

@@ -26,6 +26,7 @@
 
 #include "firebird_storage.hpp"
 #include "firebird_query_function.hpp"
+#include "firebird_insert.hpp"
 #include "firebird_dbt_sources.hpp"
 #include "firebird_scanner.hpp"
 #include "firebird_client.hpp"
@@ -859,9 +860,9 @@ public:
                                         LogicalCreateTable &, PhysicalOperator &) override {
         throw NotImplementedException("CTAS not supported on Firebird catalog");
     }
-    PhysicalOperator &PlanInsert(ClientContext &, PhysicalPlanGenerator &,
-                                 LogicalInsert &, optional_ptr<PhysicalOperator>) override {
-        throw NotImplementedException("INSERT not supported on Firebird catalog");
+    PhysicalOperator &PlanInsert(ClientContext &context, PhysicalPlanGenerator &planner,
+                                 LogicalInsert &op, optional_ptr<PhysicalOperator> plan) override {
+        return PlanFirebirdInsert(context, planner, op, plan, *this, write_enabled, none_encoding_);
     }
     PhysicalOperator &PlanDelete(ClientContext &, PhysicalPlanGenerator &,
                                  LogicalDelete &, PhysicalOperator &) override {
