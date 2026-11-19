@@ -335,3 +335,36 @@ query II
 SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID) VALUES (?)', source := 'SELECT 1 WHERE false');
 ----
 0	0
+
+# --- The source is read as a stream ------------------------------------------------
+# Rows are written as the source produces them, a chunk (2,048 rows) at a
+# time, while DuckDB computes only a chunk or two ahead. The source fails at
+# row 20,001, in its tenth chunk, with one thread: the rows commit_every
+# committed before the failure stay, and the error says so. A source run to
+# completion first (or far ahead of the writes, as with DuckDB's default
+# streaming buffer) fails before any row is written.
+
+statement ok
+SET threads = 1;
+
+statement error
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID) VALUES (?)',
+    source := 'SELECT CASE WHEN i < 20000 THEN i ELSE error(''source stopped at '' || i) END FROM range(30000) t(i)',
+    commit_every := 500);
+----
+<REGEX>:.*the source query failed after [0-9]+ row\(s\): .*source stopped at 20000.*
+
+statement ok
+RESET threads;
+
+# Rows 0 .. n-1 for some n: at least the first chunk, a multiple of 500, and
+# short of the failing row.
+query I
+SELECT count(*) >= 2000 AND count(*) < 20000 AND count(*) % 500 = 0
+       AND min(ID) = 0 AND max(ID) = count(*) - 1
+FROM rw.main.RW_TARGET;
+----
+true
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_TARGET');
