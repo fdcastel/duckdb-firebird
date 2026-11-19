@@ -30,6 +30,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 
+#include "firebird_batch.hpp"
 #include "firebird_client.hpp"
 #include "firebird_observability.hpp"
 #include "firebird_param_encoder.hpp"
@@ -51,6 +52,8 @@ struct FirebirdExecuteBindData : public TableFunctionData {
     vector<LogicalType> source_types;
     int64_t commit_every = 0;
     bool count_rows = true;
+    // Rows per Firebird 4+ batch (IBatch); 0 = one execution per row.
+    int64_t batch_size = 0;
 };
 
 struct FirebirdExecuteGlobalState : public GlobalTableFunctionState {
@@ -102,6 +105,7 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
         throw BinderException("%s(alias, sql) requires two non-NULL arguments", kFunctionName);
     }
     auto bind = make_uniq<FirebirdExecuteBindData>();
+    bool explicit_batch = false;
     bind->alias = input.inputs[0].ToString();
     bind->sql = input.inputs[1].ToString();
     for (auto &kv : input.named_parameters) {
@@ -125,6 +129,9 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
             }
         } else if (kv.first == "count_rows") {
             bind->count_rows = kv.second.IsNull() || kv.second.GetValue<bool>();
+        } else if (kv.first == "batch_size") {
+            bind->batch_size = kv.second.GetValue<int64_t>();
+            explicit_batch = true;
         }
     }
     bind->attach = GetFirebirdAttachHandle(context, bind->alias, kFunctionName);
@@ -138,6 +145,15 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
     }
 #endif
     CheckWritable(bind->attach, bind->alias);
+    if (!explicit_batch) {
+        Value v;
+        if (context.TryGetCurrentSetting("firebird_write_batch_size", v) && !v.IsNull()) {
+            bind->batch_size = v.GetValue<int64_t>();
+        }
+    }
+    if (bind->batch_size < 0) {
+        throw BinderException("%s: batch_size must be >= 0 (0 = one execution per row)", kFunctionName);
+    }
     if (bind->commit_every > 0 && !bind->has_source) {
         throw BinderException("%s: commit_every needs source := '<query>'", kFunctionName);
     }
@@ -214,6 +230,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     int64_t rows_affected = 0;
     int64_t executions = 0;
     bool rows_unknown = !bind.count_rows;
+    std::string write_mode = "row";
     const bool create_db = !bind.has_source && IsCreateDatabaseStatement(bind.sql);
     // A CREATE DATABASE statement carries a password: never log it.
     RecordFirebirdWrite(context, create_db ? "CREATE DATABASE <statement not logged>" : bind.sql, "execute", "",
@@ -251,7 +268,22 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
         FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
         CheckStatementType(stmt, false);
-        FirebirdParamEncoder encoder(stmt, bind.source_types, bind.attach.none_encoding);
+        const int statement_type = stmt.StatementType();
+        // Firebird 4+ batches when asked and possible; otherwise per row.
+        std::unique_ptr<FirebirdParamEncoder> encoder;
+        std::unique_ptr<FirebirdBatchWriter> batch;
+        if (bind.batch_size > 0) {
+            encoder = make_uniq<FirebirdParamEncoder>(stmt, bind.source_types, bind.attach.none_encoding, true);
+            std::string why;
+            batch = FirebirdBatchWriter::TryCreate(conn, stmt, *encoder, statement_type, bind.count_rows, &why);
+            if (!batch) {
+                encoder.reset();
+            }
+        }
+        if (!encoder) {
+            encoder = make_uniq<FirebirdParamEncoder>(stmt, bind.source_types, bind.attach.none_encoding);
+        }
+        write_mode = batch ? "batch" : "row";
 
         Connection con(*context.db);
 #ifdef FIREBIRD_DUCKDB_V2
@@ -263,6 +295,32 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
             throw InvalidInputException("%s: the source query failed: %s", kFunctionName, result->GetError());
         }
         int64_t committed = 0;
+        int64_t added = 0;  // rows encoded (= executions in the per-row mode)
+        auto fail = [&](int64_t row, const std::string &message) {
+            const std::string kept =
+                committed > 0 ? " Source rows 1 to " + std::to_string(committed) +
+                                    " were committed (commit_every); the later ones are rolled back."
+                              : " Nothing of this call is kept: the transaction is rolled back.";
+            throw InvalidInputException("%s: source row %lld failed: %s%s", kFunctionName,
+                                        static_cast<long long>(row), message, kept);
+        };
+        // Sends the pending batch; its rows count as executions.
+        auto flush = [&]() {
+            if (!batch || batch->Pending() == 0) {
+                return;
+            }
+            const int64_t first = executions;
+            auto res = batch->Execute();
+            executions += static_cast<int64_t>(res.executed);
+            if (res.affected < 0) {
+                rows_unknown = true;
+            } else {
+                rows_affected += res.affected;
+            }
+            if (res.failed) {
+                fail(first + static_cast<int64_t>(res.failed_index) + 1, res.error);
+            }
+        };
         while (true) {
             auto chunk = result->Fetch();
             if (!chunk || chunk->size() == 0) {
@@ -270,39 +328,44 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
             }
             for (idx_t r = 0; r < chunk->size(); ++r) {
                 try {
-                    encoder.Encode(*chunk, r);
-                    stmt.ExecuteWithInput(bind.sql);
-                    if (bind.count_rows) {
-                        rows_affected += stmt.RecordsAffected();
+                    encoder->Encode(*chunk, r);
+                    if (batch) {
+                        batch->Add();
+                    } else {
+                        stmt.ExecuteWithInput(bind.sql);
+                        if (bind.count_rows) {
+                            rows_affected += stmt.RecordsAffected();
+                        }
                     }
                 } catch (std::exception &ex) {
-                    const std::string kept =
-                        committed > 0 ? " Source rows 1 to " + std::to_string(committed) +
-                                            " were committed (commit_every); the later ones are rolled back."
-                                      : " Nothing of this call is kept: the transaction is rolled back.";
-                    throw InvalidInputException("%s: source row %lld failed: %s%s", kFunctionName,
-                                                static_cast<long long>(executions + 1), ErrorData(ex).RawMessage(),
-                                                kept);
+                    fail(added + 1, ErrorData(ex).RawMessage());
                 }
-                ++executions;
-                if (bind.commit_every > 0 && executions % bind.commit_every == 0) {
+                ++added;
+                if (!batch) {
+                    ++executions;
+                } else if (static_cast<int64_t>(batch->Pending()) >= bind.batch_size) {
+                    flush();
+                }
+                if (bind.commit_every > 0 && added % bind.commit_every == 0) {
+                    flush();
                     conn.CommitWrite();
                     conn.StartWriteTransaction(bind.lock_timeout_s);
                     committed = executions;
                 }
             }
         }
+        flush();
         if (result->HasError()) {
             throw InvalidInputException("%s: the source query failed after %lld row(s): %s", kFunctionName,
                                         static_cast<long long>(executions), result->GetError());
         }
     }
     } catch (std::exception &ex) {
-        obs->SetWriteResult("row", executions, -1);
+        obs->SetWriteResult(write_mode, executions, -1);
         obs->SetError(ErrorData(ex).RawMessage());
         throw;
     }
-    obs->SetWriteResult("row", executions, rows_unknown ? -1 : rows_affected);
+    obs->SetWriteResult(write_mode, executions, rows_unknown ? -1 : rows_affected);
     obs->AddFirebirdTimeUs(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
     obs->UpdateTotalTimeUs();
@@ -322,7 +385,8 @@ TableFunction GetFirebirdExecuteFunction() {
                          .AddPositionalOnly("sql", LogicalType::VARCHAR)
                          .AddKeywordOnly("source", LogicalType::VARCHAR, Value(LogicalType::VARCHAR))
                          .AddKeywordOnly("commit_every", LogicalType::BIGINT, Value(LogicalType::BIGINT))
-                         .AddKeywordOnly("count_rows", LogicalType::BOOLEAN, Value(LogicalType::BOOLEAN)),
+                         .AddKeywordOnly("count_rows", LogicalType::BOOLEAN, Value(LogicalType::BOOLEAN))
+                         .AddKeywordOnly("batch_size", LogicalType::BIGINT, Value(LogicalType::BIGINT)),
                      FirebirdExecuteFunction, FirebirdExecuteBind, FirebirdExecuteInitGlobal);
 #else
     TableFunction fn(kFunctionName, {LogicalType::VARCHAR, LogicalType::VARCHAR}, FirebirdExecuteFunction,
@@ -330,6 +394,7 @@ TableFunction GetFirebirdExecuteFunction() {
     fn.named_parameters["source"] = LogicalType::VARCHAR;
     fn.named_parameters["commit_every"] = LogicalType::BIGINT;
     fn.named_parameters["count_rows"] = LogicalType::BOOLEAN;
+    fn.named_parameters["batch_size"] = LogicalType::BIGINT;
 #endif
     fn.projection_pushdown = false;
     return fn;

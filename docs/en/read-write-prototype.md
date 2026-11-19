@@ -403,3 +403,63 @@ Tests: the telemetry blocks in `firebird_execute.test`,
 `firebird_execute_source.test`, `firebird_insert.test` and
 `firebird_execute_create_db.test`; `firebird_observability.test` and
 `firebird_bytes_estimate.test` check the 25-column schema.
+
+## WP8: batched writes (Firebird 4+ IBatch)
+
+```sql
+SET firebird_write_batch_size = 1000;          -- firebird_execute(source) and INSERT INTO fb.main.T
+SELECT * FROM firebird_execute('fb', '...', source := '...', batch_size := 1000);   -- per call
+```
+
+`0` (default) keeps one execution per row. With N > 0, rows are encoded
+by the same scale-exact encoder and sent N at a time through the OO API's
+`IBatch`. It is reached from the ISC handles the extension already holds
+(`fb_get_statement_interface`, `fb_get_transaction_interface`), so no
+other code changes API. `firebird/Interface.h` and
+`firebird/IdlFbInterfaces.h` are vendored from the same Firebird 5.0.3
+SDK as `ibase.h` (IDPL). The OO entry points are optional in the loader.
+
+When it batches:
+- **Firebird 5+ server:** any statement that returns no rows (INSERT,
+  UPDATE, DELETE, EXECUTE BLOCK, EXECUTE PROCEDURE).
+- **Firebird 4 server:** plain INSERT/UPDATE/DELETE only. A Firebird 4
+  server (4.0.6 and 4.0.7 tried) fails the second EXECUTE BLOCK message of
+  a batch with "request synchronization error", whatever the client
+  version. A Firebird 5 server works with a 4.0.6 client.
+- **Otherwise one row at a time:** Firebird 3, a client without the OO
+  API, statements with BLOB parameters (first version), or a
+  `createBatch` that fails.
+
+`write_mode` in the query log says which mode ran.
+
+Behavior:
+- The batch is sent every N rows and at every `commit_every` boundary.
+  There is no MULTIERROR: the first failing message stops the call, and
+  the error names the source row (batch start + index), with the same
+  "what was kept" contract as the per-row path.
+- `rows_affected` sums the record counts for plain INSERT/UPDATE/DELETE.
+  For EXECUTE BLOCK / EXECUTE PROCEDURE it is NULL: Firebird reports 0 for
+  each such message even when it changed rows (Firebird issue 9239, open),
+  and NULL is better than a wrong 0. Per row, `isc_info_sql_records` does
+  count the DML inside the block.
+- One message layout for all rows: wide integers and wide DECIMALs travel
+  as INT128 (with their scale), not as BIGINT-or-text per value.
+
+Tests: `test/sql/firebird_execute_batch.test` (Firebird 3/4/5, with
+`firebird_write_batch_size = 100`). It covers:
+- every non-BLOB type family round-trips exactly (both-way `EXCEPT ALL`),
+  with WIN1252 bytes for the NONE column;
+- sticky NULLs, NULL/value/NULL/value/NULL, with stored values checked;
+- 1.5 into NUMERIC(9,3) from DECIMAL(2,1), DECIMAL(38,10) (INT128),
+  DOUBLE, INTEGER, HUGEINT and VARCHAR;
+- 250 rows across three batches;
+- an error in row 4 keeps nothing, or rows 1 to 2 with `commit_every`;
+- a failure in a later batch names source row 251;
+- EXECUTE BLOCK upsert (batch on 5+, per row on 3/4, `rows_affected`
+  NULL in batch);
+- a BLOB statement stays per row;
+- INSERT INTO with a round trip, 2,500 rows and an error in row 251.
+
+`write_mode` is checked against the server version on every case.
+Negative control (Firebird 5, local build): a message that keeps the
+previous row's NULL flags fails the round trip.

@@ -1,0 +1,60 @@
+#pragma once
+
+#include <memory>
+#include <string>
+
+#include "duckdb.hpp"
+
+#include "firebird_client.hpp"
+#include "firebird_param_encoder.hpp"
+
+namespace duckdb {
+
+// Firebird 4+ batched execution (IBatch) of a prepared statement with
+// parameters: rows are encoded by a fixed-layout FirebirdParamEncoder,
+// copied into one batch message each, and sent together on Execute().
+//
+// Only plain INSERT/UPDATE/DELETE on Firebird 4 (its server fails the
+// second EXECUTE BLOCK message of a batch with "request synchronization
+// error"), and any statement that returns no rows on Firebird 5+.
+// Parameters that are BLOBs keep the per-row path.
+class FirebirdBatchWriter {
+public:
+    // Null (and the reason in *why_not) when the statement can't be
+    // batched here: client without the OO API, server older than 4, a
+    // statement type the server can't batch, BLOB parameters, or
+    // createBatch failed. The encoder must have been built with
+    // fixed_layout = true on `stmt`.
+    static std::unique_ptr<FirebirdBatchWriter> TryCreate(FirebirdConnection &conn, FirebirdStatement &stmt,
+                                                          FirebirdParamEncoder &encoder, int statement_type,
+                                                          bool count_rows, std::string *why_not);
+    ~FirebirdBatchWriter();
+
+    // Appends the row the encoder encoded last.
+    void Add();
+    idx_t Pending() const {
+        return pending_;
+    }
+
+    struct Result {
+        idx_t executed = 0;         // messages that ran, the failed one excluded
+        int64_t affected = -1;      // sum of record counts; -1 = not reported
+        bool failed = false;
+        idx_t failed_index = 0;     // 0-based within this batch
+        std::string error;
+    };
+    // Sends the pending messages in the connection's current transaction.
+    // Stops at the first failing message (no MULTIERROR).
+    Result Execute();
+
+private:
+    FirebirdBatchWriter() = default;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    idx_t pending_ = 0;
+};
+
+// The statement types a server of this major version can batch.
+bool FirebirdCanBatchStatement(int engine_major, int statement_type);
+
+} // namespace duckdb
