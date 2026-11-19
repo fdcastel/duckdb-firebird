@@ -141,6 +141,53 @@ SELECT * FROM firebird_execute('rw', 'EXECUTE PROCEDURE SP_SEQ(3)');
 ----
 0	1
 
+# --- Telemetry: one record per call -------------------------------------------
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'UPDATE RW_LOG SET NOTE = NOTE WHERE ID IN (7, 8)');
+
+query IIIIII
+SELECT operation, write_mode, rows_written, rows_affected, remote_sql, error_message FROM firebird_last_query();
+----
+execute	row	1	2	UPDATE RW_LOG SET NOTE = NOTE WHERE ID IN (7, 8)	(empty)
+
+# A statement that returns rows: rows_affected unknown.
+statement ok
+SELECT * FROM firebird_execute('rw', 'SELECT 1 FROM RDB$DATABASE');
+
+query III
+SELECT operation, rows_written, rows_affected FROM firebird_last_query();
+----
+execute	1	NULL
+
+# A failure is recorded with its error.
+statement error
+SELECT * FROM firebird_execute('rw', 'INSERT INTO NO_SUCH_TABLE VALUES (1)');
+----
+NO_SUCH_TABLE
+
+query II
+SELECT operation, error_message LIKE '%NO_SUCH_TABLE%' FROM firebird_last_query();
+----
+execute	true
+
+# Reads say what they are.
+statement ok
+SELECT * FROM firebird_query('ro', 'SELECT 1 FROM RDB$DATABASE');
+
+query IIII
+SELECT operation, write_mode, rows_written, rows_affected FROM firebird_last_query();
+----
+query	NULL	NULL	NULL
+
+statement ok
+SELECT count(*) FROM ro.main.RW_LOG;
+
+query II
+SELECT operation, write_mode FROM firebird_last_query();
+----
+scan	NULL
+
 query II
 SELECT * FROM firebird_execute('rw', 'CREATE TABLE RW_DDL (X INTEGER)');
 ----

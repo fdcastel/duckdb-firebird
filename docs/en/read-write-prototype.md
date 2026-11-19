@@ -177,7 +177,6 @@ and directory for new databases.
 
 ### Gaps
 
-- No telemetry record for `firebird_execute`.
 - Reads don't see the uncommitted writes of their own DuckDB transaction.
 
 ## WP3: parameter encoder and `firebird_execute(..., source := ...)`
@@ -382,3 +381,25 @@ reads the table's name and statistics (none).
 worth doing only if the ETL needs UPDATE/DELETE written as DuckDB SQL over
 `fb.main`. Otherwise `firebird_execute` already covers both (one
 server-side statement, or per-row with `source`), and faster.
+
+## Write telemetry
+
+`firebird_last_query()` and `firebird_query_log()` gain four columns at
+the end (21 -> 25):
+- `operation`: `scan`, `query` (`firebird_query`), `execute`
+  (`firebird_execute`) or `insert` (INSERT into an ATTACH table);
+- `write_mode`: `row` or `batch`, NULL for reads;
+- `rows_written`: executions (statement runs, source rows, inserted rows),
+  NULL for reads;
+- `rows_affected`: Firebird's record counts, NULL for reads or when not
+  counted (`count_rows := false`, a statement that returns rows).
+
+Every `firebird_execute` call and every INSERT leaves one record with the
+SQL as prepared (`remote_sql`), its counts, its timing and, after a
+failure, the error. A `CREATE DATABASE` statement is logged as `CREATE
+DATABASE <statement not logged>`, because it carries a password.
+
+Tests: the telemetry blocks in `firebird_execute.test`,
+`firebird_execute_source.test`, `firebird_insert.test` and
+`firebird_execute_create_db.test`; `firebird_observability.test` and
+`firebird_bytes_estimate.test` check the 25-column schema.

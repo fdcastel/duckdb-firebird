@@ -1365,6 +1365,13 @@ Saida compartilhada com `firebird_query_log()`:
 - `partition_method`: como a tabela foi dividida: `none` (uma particao),
   `pk` (faixas de PK) ou `dbkey` (faixas de `RDB$DB_KEY`,
   `partition_by = 'dbkey'`).
+- `operation`: o que e o registro: `scan`, `query` (`firebird_query`),
+  `execute` (`firebird_execute`) ou `insert` (INSERT em tabela de um
+  ATTACH).
+- `write_mode`, `rows_written`, `rows_affected`: so para escritas; `NULL`
+  em leituras. `write_mode` e `row` ou `batch`; `rows_written` sao as
+  execucoes; `rows_affected` sao as contagens de registros do Firebird
+  (`NULL` quando nao contadas).
 - `captured_at`: timestamp de captura.
 - `error_message`: erro sanitizado, vazio quando a query terminou limpa.
 - `limit_pushed`: limite `ROWS` realmente empurrado ao Firebird
@@ -1380,8 +1387,9 @@ As tres ultimas (`limit_pushed` / `offset_pushed` / `not_pushed_reasons`)
 sao as colunas de explicabilidade de pushdown (Fase 4 #3). Deixam explicito
 o que de paginacao chegou ao Firebird e por que um filtro ficou local, sem
 funcao nova. `bytes_read_estimate` (G5), `snapshot_mode` e
-`partition_method` entram como colunas aditivas no fim - o schema agora
-tem 21 colunas, compartilhado por `firebird_last_query()` e
+`partition_method`, e depois `operation`, `write_mode`, `rows_written` e
+`rows_affected`, entram como colunas aditivas no fim - o schema agora
+tem 25 colunas, compartilhado por `firebird_last_query()` e
 `firebird_query_log()`. As razoes sao factuais e
 coarse, nao um trace de planner:
 
@@ -1625,7 +1633,7 @@ FROM firebird_explain_pushdown(
 
 Mostra um historico curto das queries Firebird tentadas na conexao DuckDB
 atual. O log e desligado por padrao. Cada linha carrega o mesmo schema de
-telemetria de 21 colunas do `firebird_last_query()` - incluindo
+telemetria de 25 colunas do `firebird_last_query()` - incluindo
 `bytes_read_estimate`, entao o log rotacionado preserva as estimativas de
 transferencia por query da sessao.
 

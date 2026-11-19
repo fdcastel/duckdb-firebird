@@ -859,8 +859,13 @@ Useful fields include:
   snapshot (`snapshot_mode`) and how the table was split
   (`partition_method`)
 - connection reuse details
+- what the record is (`operation`: `scan`, `query` for `firebird_query`,
+  `execute` for `firebird_execute`, `insert` for an INSERT into an ATTACH
+  table) and, for writes, `write_mode` (`row` or `batch`), `rows_written`
+  (executions) and `rows_affected` (Firebird's record counts; `NULL` when
+  not counted). The three write columns are `NULL` for reads.
 
-The schema is 21 columns (shared with `firebird_query_log()`). The
+The schema is 25 columns (shared with `firebird_query_log()`). The
 pushdown-explainability columns (`limit_pushed`, `offset_pushed`,
 `not_pushed_reasons`) make it explicit what reached Firebird and why a
 filter stayed local, and `bytes_read_estimate` (added last, G5) supports

@@ -198,6 +198,7 @@ unique_ptr<GlobalTableFunctionState> FirebirdQueryInitGlobal(ClientContext &cont
     rec.parallel_scan = false;
     rec.snapshot_mode = tx_snapshot ? "transaction" : "serial";
     rec.partition_method = "none";
+    rec.operation = "query";
     rec.captured_at = Timestamp::GetCurrentTimestamp();
     rec.connection_id = state->conn->Id();
     rec.connection_reused = lease.reused;

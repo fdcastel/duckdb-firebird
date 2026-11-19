@@ -19,6 +19,7 @@
 #include "duckdb/planner/operator/logical_insert.hpp"
 
 #include "firebird_client.hpp"
+#include "firebird_observability.hpp"
 #include "firebird_param_encoder.hpp"
 #include "firebird_query_function.hpp"
 #include "firebird_types.hpp"
@@ -76,23 +77,29 @@ public:
         }
         auto state = make_uniq<FirebirdInsertGlobalState>();
         auto &conn = GetFirebirdWriteConnection(context, catalog_, lock_timeout_s);
+        RecordFirebirdWrite(context, sql_, "insert", table_name_, conn.Id());
         state->stmt = make_uniq<FirebirdStatement>(conn, sql_, FirebirdStatement::PrepareOnlyTag {});
         state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_);
         return std::move(state);
     }
 
-    SinkResultType Sink(ExecutionContext &, DataChunk &chunk, OperatorSinkInput &input) const override {
+    SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override {
         auto &state = input.global_state.Cast<FirebirdInsertGlobalState>();
+        auto obs = GetObservabilityState(context.client);
         for (idx_t r = 0; r < chunk.size(); ++r) {
             try {
                 state.encoder->Encode(chunk, r);
                 state.stmt->ExecuteWithInput(sql_);
             } catch (std::exception &ex) {
-                throw InvalidInputException("INSERT into Firebird table \"%s\": row %lld failed: %s", table_name_,
-                                            static_cast<long long>(state.rows + 1), ErrorData(ex).RawMessage());
+                const std::string msg = "INSERT into Firebird table \"" + table_name_ + "\": row " +
+                                        std::to_string(state.rows + 1) + " failed: " + ErrorData(ex).RawMessage();
+                obs->SetWriteResult("row", state.rows, -1);
+                obs->SetError(msg);
+                throw InvalidInputException(msg);
             }
             ++state.rows;
         }
+        obs->SetWriteResult("row", state.rows, -1);
         return SinkResultType::NEED_MORE_INPUT;
     }
 

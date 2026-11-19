@@ -19,6 +19,7 @@
 // reports them; NULL with count_rows := false) and executions.
 
 #include <cctype>
+#include <chrono>
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/database_modification_type.hpp"
@@ -30,6 +31,7 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 
 #include "firebird_client.hpp"
+#include "firebird_observability.hpp"
 #include "firebird_param_encoder.hpp"
 #include "firebird_query_function.hpp"
 
@@ -212,7 +214,14 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     int64_t rows_affected = 0;
     int64_t executions = 0;
     bool rows_unknown = !bind.count_rows;
-    if (!bind.has_source && IsCreateDatabaseStatement(bind.sql)) {
+    const bool create_db = !bind.has_source && IsCreateDatabaseStatement(bind.sql);
+    // A CREATE DATABASE statement carries a password: never log it.
+    RecordFirebirdWrite(context, create_db ? "CREATE DATABASE <statement not logged>" : bind.sql, "execute", "",
+                        -1);
+    auto obs = GetObservabilityState(context);
+    const auto t0 = std::chrono::steady_clock::now();
+    try {
+    if (create_db) {
         // Creates another database; this ATTACH's transaction is not involved.
         FirebirdCreateDatabase(bind.sql, bind.attach.dialect);
         executions = 1;
@@ -288,6 +297,15 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                                         static_cast<long long>(executions), result->GetError());
         }
     }
+    } catch (std::exception &ex) {
+        obs->SetWriteResult("row", executions, -1);
+        obs->SetError(ErrorData(ex).RawMessage());
+        throw;
+    }
+    obs->SetWriteResult("row", executions, rows_unknown ? -1 : rows_affected);
+    obs->AddFirebirdTimeUs(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
+    obs->UpdateTotalTimeUs();
 
     output.SetCardinality(1);
     output.data[0].SetValue(0, rows_unknown ? Value(LogicalType::BIGINT) : Value::BIGINT(rows_affected));

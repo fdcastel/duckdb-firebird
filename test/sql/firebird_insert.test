@@ -178,6 +178,11 @@ INSERT INTO rw.main.RW_LOG SELECT i, 'n' || i FROM range(20000) t(i);
 ----
 20000
 
+query IIIII
+SELECT operation, table_name, write_mode, rows_written, remote_sql FROM firebird_last_query();
+----
+insert	RW_LOG	row	20000	INSERT INTO "RW_LOG" ("ID", "NOTE") VALUES (?, ?)
+
 query II
 SELECT count(*), sum(ID) FROM ro.main.RW_LOG;
 ----

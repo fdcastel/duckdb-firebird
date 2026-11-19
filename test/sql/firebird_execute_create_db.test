@@ -39,6 +39,12 @@ SELECT * FROM firebird_execute('rw', getvariable('create_sql'));
 ----
 <!REGEX>:.*masterkey.*
 
+# The query log never holds the statement either (it carries a password).
+query II
+SELECT operation, remote_sql FROM firebird_last_query();
+----
+execute	CREATE DATABASE <statement not logged>
+
 # Needs the READ_WRITE opt-in like any other write.
 statement ok
 ATTACH '${FIREBIRD_RW_DB}' AS ro (TYPE firebird);

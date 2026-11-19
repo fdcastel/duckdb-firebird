@@ -314,6 +314,19 @@ SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID) VALUES (?)',
 ----
 NULL	5
 
+query IIII
+SELECT operation, write_mode, rows_written, rows_affected FROM firebird_last_query();
+----
+execute	row	5	NULL
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_TARGET WHERE ID = ?', source := 'SELECT * FROM range(80, 83)');
+
+query III
+SELECT write_mode, rows_written, rows_affected FROM firebird_last_query();
+----
+row	3	3
+
 statement ok
 SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_TARGET');
 
