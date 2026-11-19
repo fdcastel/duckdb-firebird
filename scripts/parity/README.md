@@ -87,3 +87,36 @@ Setup: DuckDB 1.5.6, extension a400738 (branch `read-write`), official Firebird 
 - **Computed columns:** the same cost on every path; the cost is on the server.
 
 A speedup seen on one production query heavy on selectable procedures (2.5× faster than ODBC) **doesn't reproduce here**: `selectable_procedure` takes the same time on both paths. So it isn't claimed.
+
+## Writes: `parity_writes.py` (needs the read-write prototype build)
+
+`parity_writes.py` writes the same rows three ways and reads every stored value back with `firebird_query`:
+- `odbc_copy`;
+- `firebird_execute(alias, dml, source := …)`;
+- `INSERT INTO fb.main.T SELECT`.
+
+```sh
+uv run --no-project --with duckdb==1.5.6 python scripts/parity/parity_writes.py \
+    --database localhost:/data/parity.fdb --extension <read-write build> --odbc --rows 1000000
+```
+
+Results: Firebird 5.0.4, Windows, server on the same host, extension a400738, official ODBC driver 3.0.1.21.
+
+| case | path | seconds | rows/s | missing | not sent | result |
+|---|---|---:|---:|---:|---:|---|
+| `sticky_null` (2,000 rows) | odbc_copy | 0.23 | 8,593 | **999** | **999** | **values differ** |
+| | firebird_execute | 0.12 | 16,978 | 0 | 0 | exact |
+| | insert_into | 0.15 | 13,119 | 0 | 0 | exact |
+| `types` (3 rows, every family) | odbc_copy | 0.02 | – | **1** | **1** | **values differ** |
+| | firebird_execute | 0.01 | – | 0 | 0 | exact |
+| | insert_into | 0.04 | – | 0 | 0 | exact |
+| `bulk` (1,000,000 rows) | odbc_copy | 112.63 | 8,879 | 0 | 0 | exact |
+| | firebird_execute | **58.17** | **17,191** | 0 | 0 | exact |
+| | insert_into | **58.41** | **17,120** | 0 | 0 | exact |
+| `floor` (1,000,000 no-op `EXECUTE BLOCK`) | odbc_copy | 95.36 | 10,486 | | | 95.4 µs/row |
+| | firebird_execute | 56.41 | 17,728 | | | 56.4 µs/row |
+
+- **`sticky_null`:** the official ODBC driver stores NULL for every value that follows a NULL on a parameter whose source type differs from the column type (firebird-odbc-driver issue 300). Here that's 999 of the 1,000 non-NULL rows. Both native paths store every value.
+- **`types`:** ODBC stores `TIME '23:59:59.9999'` as `23:59:59`, dropping the fractional seconds. Every value round-trips natively: 150 KB text BLOB, pre-1900 dates, `NUMERIC(18,4)` extremes, UTF-8 text, BOOLEAN.
+- **`floor`:** a statement that does nothing costs 56 µs per row natively and 95 µs through ODBC. On the same host, a simple INSERT takes 58 µs per row, so nearly all of it is per-row round-trip overhead. That's the case for batching.
+- **Known gap:** DDL run through `firebird_execute` doesn't refresh the ATTACH catalog. The script re-attaches before `INSERT INTO fb.main.T` for that reason.
