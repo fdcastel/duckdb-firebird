@@ -100,6 +100,17 @@ def write(con, path: str, table: str, dml: str, source: str) -> float:
     return time.perf_counter() - t0
 
 
+def set_batch_size(con, size: int | None) -> bool:
+    """SET firebird_write_batch_size (batching experiment); False when the build lacks the setting."""
+    if size is None:
+        return True
+    try:
+        con.execute(f"SET firebird_write_batch_size = {int(size)}")
+        return True
+    except duckdb.Error:
+        return False
+
+
 def verify(con, table: str, source: str) -> tuple[int, int]:
     """(rows missing from the table, rows in the table that were not sent) -- both 0 when exact."""
     got = f"SELECT * FROM firebird_query('fb', 'SELECT * FROM {table}')"
@@ -117,23 +128,36 @@ def main() -> None:
     ap.add_argument("--odbc", action="store_true")
     ap.add_argument("--odbc-driver", default="Firebird ODBC Driver")
     ap.add_argument("--rows", type=int, default=1_000_000)
+    ap.add_argument("--batch-sizes", type=int, nargs="*",
+                    help="repeat the native paths with SET firebird_write_batch_size = N for each N "
+                         "(0 = per-row); needs a build with batching")
     ap.add_argument("--out")
     args = ap.parse_args()
 
     con = connect(args)
     version = con.execute("SELECT * FROM firebird_query('fb', "
                           "'SELECT rdb$get_context(''SYSTEM'', ''ENGINE_VERSION'') FROM rdb$database')").fetchone()[0]
-    paths = (["odbc_copy"] if args.odbc else []) + ["firebird_execute", "insert_into"]
+    # (path, batch size or None). None leaves firebird_write_batch_size alone, which is the
+    # only option on a build without batching; --batch-sizes repeats the native paths per size.
+    sizes: list[int | None] = list(args.batch_sizes) if args.batch_sizes else [None]
+    variants: list[tuple[str, int | None]] = [("odbc_copy", None)] if args.odbc else []
+    variants += [(p, b) for b in sizes for p in ("firebird_execute", "insert_into")]
     cases = [
         ("sticky_null", STICKY_DDL, STICKY_DML, STICKY_SQL),
         ("types", TYPES_DDL, TYPES_DML, TYPES_SQL),
         ("bulk", BULK_DDL, BULK_DML, BULK_SQL.format(rows=args.rows)),
     ]
+    code = {"odbc_copy": "ODBC", "firebird_execute": "FBX", "insert_into": "INS"}
     lines = ["| case | path | seconds | rows/s | missing | not sent | result |", "|---|---|---:|---:|---:|---:|---|"]
     for case, ddl, dml, source in cases:
         rows = con.execute(f"SELECT count(*) FROM ({source})").fetchone()[0]
-        for path in paths:
-            table = f"PARW_{case.upper()}_{path.upper()}"[:31]
+        for path, size in variants:
+            label = path if size is None else f"{path} (batch {size})"
+            if not set_batch_size(con, size):
+                lines.append(f"| `{case}` | {label} | | | | | build has no firebird_write_batch_size |")
+                print(lines[-1], flush=True)
+                continue
+            table = f"PARW_{case[:6].upper()}_{code[path]}{'' if size is None else size}"
             execute(con, ddl.format(t=table))
             if path == "insert_into":
                 # DDL through firebird_execute doesn't refresh the ATTACH catalog (known gap):
@@ -145,20 +169,30 @@ def main() -> None:
             except duckdb.Error as e:
                 con.execute("RESET threads")
                 msg = str(e).strip().splitlines()[0][:120].replace("|", "/")
-                lines.append(f"| `{case}` | {path} | | | | | error: {msg} |")
+                lines.append(f"| `{case}` | {label} | | | | | error: {msg} |")
                 print(lines[-1], flush=True)
                 continue
             missing, extra = verify(con, table, source)
             ok = "exact" if (missing, extra) == (0, 0) else "**values differ**"
-            lines.append(f"| `{case}` | {path} | {secs:.2f} | {rows / secs:,.0f} | {missing:,} | {extra:,} | {ok} |")
+            lines.append(f"| `{case}` | {label} | {secs:.2f} | {rows / secs:,.0f} | {missing:,} | {extra:,} | {ok} |")
             print(lines[-1], flush=True)
 
     # Per-row floor: a statement with one parameter and no server work.
     floor = f"SELECT i::INTEGER FROM range({args.rows}) t(i)"
     noop = "EXECUTE BLOCK (X INTEGER = ?) AS BEGIN END"
-    for path in [p for p in paths if p != "insert_into"]:
-        secs = write(con, path, "", noop, floor)
-        lines.append(f"| `floor` (no-op EXECUTE BLOCK) | {path} | {secs:.2f} | {args.rows / secs:,.0f} | | | "
+    for path, size in [v for v in variants if v[0] != "insert_into"]:
+        label = path if size is None else f"{path} (batch {size})"
+        if not set_batch_size(con, size):
+            continue
+        try:
+            secs = write(con, path, "", noop, floor)
+        except duckdb.Error as e:
+            con.execute("RESET threads")
+            msg = str(e).strip().splitlines()[0][:120].replace("|", "/")
+            lines.append(f"| `floor` (no-op EXECUTE BLOCK) | {label} | | | | | error: {msg} |")
+            print(lines[-1], flush=True)
+            continue
+        lines.append(f"| `floor` (no-op EXECUTE BLOCK) | {label} | {secs:.2f} | {args.rows / secs:,.0f} | | | "
                      f"{secs / args.rows * 1e6:.1f} µs/row |")
         print(lines[-1], flush=True)
 
