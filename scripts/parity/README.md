@@ -44,7 +44,9 @@ uv run --no-project --with duckdb==1.5.6 python scripts/parity/parity.py \
 
 ## Results: Firebird 5.0.4, Windows, server on the same host
 
-Setup: DuckDB 1.5.6, extension a400738 (branch `read-write`), official Firebird ODBC driver 3.0.1.21, best of 3.
+Setup: DuckDB 1.5.6, extension a400738 (branch `read-write`), official Firebird ODBC driver 3.0.1.21, best of 3. The standalone `firebird-query` build (a568181) gives the same values, rows and types, with times within 10%.
+
+On another machine, the same queries on Firebird 3.0.13 and 4.0.6 (no ODBC driver there) gave 0/0 value differences on every query. Their timings are under "What it shows".
 
 | query | path | seconds | rows | rows sent by Firebird | value diff vs `query` (raw, trimmed) | type differences vs `query` |
 |---|---|---:|---:|---:|---|---|
@@ -73,8 +75,13 @@ Setup: DuckDB 1.5.6, extension a400738 (branch `read-write`), official Firebird 
 
 ## What it shows
 
-- **A join filtered through its header table.** Written in DuckDB over ATTACHed tables, the date filter reaches only `PAR_ORDER`, so Firebird sends all 1 M detail rows to keep 90,680. That's 12× the rows sent and 3.6× the time on the same host, and the gap grows with network latency. `firebird_query` lets the server use its indexes and sends only the result.
-- **An aggregate.** On the same host DuckDB aggregates 1.25 M shipped rows as fast as Firebird does on the server. `firebird_query` sends 180 rows instead of 1.25 M, which matters as soon as the server is remote.
+- **Rows on the wire, not raw speed.**
+  - A join filtered through its header table: written in DuckDB over ATTACHed tables, the date filter reaches only `PAR_ORDER`, so Firebird sends all 1 M detail rows to keep 90,680. `firebird_query` sends only the result: **90,680 rows instead of 1,087,769**.
+  - An aggregate: **180 rows instead of 1,250,000**.
+  - Which path is faster depends on the machine. On the same host the extra rows cost little, DuckDB joins and aggregates them in parallel, and Firebird runs the query on one thread:
+    - here (Firebird 5.0.4) the join takes 0.74 s with `firebird_query` against 2.65 s through ATTACH, and the aggregate ties;
+    - on a second machine (Firebird 3.0.13 / 4.0.6) ATTACH won both, 1.56 s against 2.60 s and 1.16 s against 3.24 s on Firebird 3.
+  - Over a real network the rows sent dominate. So `firebird_query` is presented for what ATTACH can't do and for the rows it doesn't move, not as faster in general.
 - **What only `firebird_query` can reach:** a selectable stored procedure. ATTACH can't call it. Time equals ODBC's.
 - **Values are the same as ATTACH everywhere.** `firebird_query` uses the extension's type mapping, so it inherits the existing fidelity: trimmed CHAR, BLOB bytes past a NUL, INT128 as `DECIMAL(38,x)`, exact `DECFLOAT`, and time zones.
 - **The usual ODBC path loses data in four places:**
