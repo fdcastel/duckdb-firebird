@@ -218,6 +218,20 @@ public:
     // cursor; rows are then read with Fetch().
     void ExecuteCursor(const std::string &sql_for_error);
 
+    // Executes a statement constructed with PrepareOnlyTag that opens no
+    // cursor (DML, DDL, EXECUTE PROCEDURE, EXECUTE BLOCK without SUSPEND).
+    void ExecuteNoCursor(const std::string &sql_for_error);
+
+    // Rows inserted + updated + deleted by the last execution
+    // (isc_info_sql_records), or 0 when the server reports none.
+    int64_t RecordsAffected();
+
+    // Describes the statement's `?` parameters (isc_dsql_describe_bind),
+    // once. For text the character set is in character_set_id; for a BLOB
+    // the subtype is in sqlsubtype and the character set of a text BLOB in
+    // character_set_id.
+    const std::vector<FirebirdColumnDesc> &DescribeInput();
+
     // Returns false when no more rows are available.
     bool Fetch();
 
@@ -260,6 +274,8 @@ private:
     std::vector<short> indicators_;
     std::vector<short> in_indicators_;
     std::vector<FirebirdColumnDesc> columns_;
+    std::vector<FirebirdColumnDesc> in_params_;
+    bool input_described_ = false;
     // G5 — see RowWidthBytes()/BytesRead(). row_width_bytes_ is fixed at
     // AllocateBuffers time; bytes_read_ is mutable because ReadBlob() is
     // const (it is called through const-access paths in the value
@@ -335,6 +351,12 @@ public:
 
     // Pool size hint (mostly for testing / introspection).
     size_t IdleCount();
+
+    // Close every idle connection (counted as discarded). An idle
+    // attachment keeps the tables it used in its metadata cache, which
+    // makes Firebird refuse DROP / ALTER of those tables ("object ... is in
+    // use"); connections in use are left alone.
+    void DiscardIdle();
 
     // Lifetime counters. Useful for tests and for the future
     // pool-introspection surface. Process-relative; no decay.
@@ -460,6 +482,18 @@ public:
     void RestoreDefaultTransaction();
     bool InSnapshotTransaction() const { return in_snapshot_; }
 
+    // --- Write transaction (firebird_execute) -------------------------------
+    //
+    // Replace the default read-only transaction with a read-write one:
+    // read committed, record versions, wait for locks up to
+    // lock_timeout_s seconds (0 = no wait). Commit/RollbackWrite end it and
+    // start the default read-only transaction again, so a connection is
+    // never pooled in write state. They throw on failure.
+    void StartWriteTransaction(int64_t lock_timeout_s);
+    void CommitWrite();
+    void RollbackWrite();
+    bool InWriteTransaction() const { return in_write_; }
+
     // Database page size in bytes (isc_database_info / isc_info_page_size),
     // or 0 if the server did not answer. Needs no monitoring privileges.
     int64_t PageSize();
@@ -493,6 +527,7 @@ private:
     isc_tr_handle tr_ = 0;
     int64_t id_ = 0;
     bool in_snapshot_ = false;
+    bool in_write_ = false;
     std::atomic<bool> broken_{false};
 
     void Attach();
