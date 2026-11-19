@@ -226,11 +226,19 @@ public:
     // (isc_info_sql_records), or 0 when the server reports none.
     int64_t RecordsAffected();
 
+    // --- Input parameters ---------------------------------------------------
+    //
     // Describes the statement's `?` parameters (isc_dsql_describe_bind),
     // once. For text the character set is in character_set_id; for a BLOB
     // the subtype is in sqlsubtype and the character set of a text BLOB in
     // character_set_id.
     const std::vector<FirebirdColumnDesc> &DescribeInput();
+    // The input descriptor DescribeInput() allocated; FirebirdParamEncoder
+    // points its entries at the encoded values before every execution.
+    XSQLDA *InputSqlda() { return in_sqlda_; }
+    // Executes with the current input values; opens no cursor.
+    void ExecuteWithInput(const std::string &sql_for_error);
+    FirebirdConnection &Connection() { return conn_; }
 
     // Returns false when no more rows are available.
     bool Fetch();
@@ -285,11 +293,6 @@ private:
 
     void Prepare(const std::string &sql);
     void AllocateBuffers();
-    // Encodes `params` into the input XSQLDA buffers described by
-    // `isc_dsql_describe_bind`. Throws IOException on type mismatch
-    // or unsupported parameter type.
-    void BindInputParameters(const std::vector<Value> &params,
-                              const std::string &sql_for_error);
 };
 
 // Tunable knobs for the connection pool. All defaults reproduce the
@@ -494,6 +497,15 @@ public:
     void RollbackWrite();
     bool InWriteTransaction() const { return in_write_; }
 
+    // Major version of the server's engine (RDB$GET_CONTEXT ENGINE_VERSION),
+    // read once; 0 when it can't be read.
+    int EngineMajor();
+
+    // Creates a BLOB holding `bytes` in the current transaction and returns
+    // its id, to pass as a parameter value. `subtype` and `charset` are the
+    // target's (charset only matters for a text BLOB, subtype 1).
+    ISC_QUAD CreateBlob(const std::string &bytes, int16_t subtype, int16_t charset);
+
     // Database page size in bytes (isc_database_info / isc_info_page_size),
     // or 0 if the server did not answer. Needs no monitoring privileges.
     int64_t PageSize();
@@ -528,6 +540,7 @@ private:
     int64_t id_ = 0;
     bool in_snapshot_ = false;
     bool in_write_ = false;
+    int engine_major_ = -1;
     std::atomic<bool> broken_{false};
 
     void Attach();

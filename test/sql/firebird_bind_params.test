@@ -92,3 +92,33 @@ SELECT EMP_ID FROM firebird_scan('${FIREBIRD_TEST_DB}', 'EMPLOYEE')
 ----
 2
 5
+
+# --- A text BLOB column compared with strings -----------------------
+# NOTE is BLOB SUB_TYPE TEXT: whether the filter is sent to Firebird or
+# applied by DuckDB, the rows are the same.
+
+query I
+SELECT EMP_ID FROM firebird_scan('${FIREBIRD_TEST_DB}', 'EMPLOYEE')
+ WHERE NOTE = 'Team lead';
+----
+4
+
+query I
+SELECT EMP_ID FROM firebird_scan('${FIREBIRD_TEST_DB}', 'EMPLOYEE')
+ WHERE NOTE IN ('On leave', 'Team lead', 'nobody')
+ ORDER BY EMP_ID;
+----
+3
+4
+
+statement ok
+ATTACH '${FIREBIRD_TEST_DB}' AS fb_blobf (TYPE firebird);
+
+query I
+SELECT EMP_ID FROM fb_blobf.main.EMPLOYEE
+ WHERE NOTE = 'Senior developer';
+----
+1
+
+statement ok
+DETACH fb_blobf;
