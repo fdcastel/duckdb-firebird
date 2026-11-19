@@ -11,6 +11,7 @@
  *   CUSTOMER : an upsert target (EXECUTE BLOCK ... UPDATE OR INSERT).
  *   RW_DEFAULTS: column defaults, for INSERTs that don't name every column.
  *   RW_COMPUTED: a COMPUTED BY column, which an INSERT must not send.
+ *   RW_WIDE  : a wide row (two VARCHAR(8000) UTF8) for the batch buffer.
  *   SP_SEQ   : selectable procedure returning N rows.
  *   RW_LOG / SP_WRITE: a log table, and a selectable procedure that writes.
  */
@@ -97,6 +98,14 @@ CREATE TABLE RW_DEFAULTS (
     ID   INTEGER NOT NULL PRIMARY KEY,
     NOTE VARCHAR(10) DEFAULT 'dflt',
     QTY  INTEGER DEFAULT 7
+);
+
+/* A wide row: two VARCHAR(8000) in UTF8 (4 bytes per character), about
+ * 64 KB per parameter message -- a batch of 1000 rows is ~64 MB. */
+CREATE TABLE RW_WIDE (
+    ID INTEGER NOT NULL,
+    A  VARCHAR(8000),
+    B  VARCHAR(8000)
 );
 
 CREATE TABLE RW_LOG (

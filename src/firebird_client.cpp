@@ -948,6 +948,25 @@ void FirebirdConnection::RollbackWrite() {
     StartReadOnlyTransaction();
 }
 
+int FirebirdConnection::EngineMajor() {
+    if (engine_major_ < 0) {
+        engine_major_ = 0;
+        try {
+            auto cur = OpenCursor("SELECT RDB$GET_CONTEXT('SYSTEM', 'ENGINE_VERSION') FROM RDB$DATABASE");
+            if (cur->Fetch() && !cur->IsNull(0)) {
+                engine_major_ = std::atoi(cur->GetText(0).c_str());
+            }
+        } catch (...) {
+            engine_major_ = 0;
+        }
+    }
+    return engine_major_;
+}
+
+std::string FirebirdStatusText(const ISC_STATUS *status) {
+    return StatusText(status);
+}
+
 std::unique_ptr<FirebirdStatement> FirebirdConnection::OpenCursor(const std::string &sql) {
     return make_uniq<FirebirdStatement>(*this, sql);
 }

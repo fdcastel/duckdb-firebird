@@ -39,6 +39,32 @@ SELECT count(*) FROM (SELECT * FROM rw.main.RW_TYPES4 EXCEPT ALL SELECT * FROM r
 statement ok
 SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_TARGET4');
 
+# The same round trip in batches (IBatch): the fixed message layout of
+# INT128, NUMERIC(38,6), DECFLOAT and the time zone types.
+query II
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET4 VALUES (?, ?, ?, ?, ?, ?, ?)',
+    source := 'SELECT * FROM ro.main.RW_TYPES4', batch_size := 100);
+----
+3	3
+
+query I
+SELECT write_mode FROM firebird_last_query();
+----
+batch
+
+query I
+SELECT count(*) FROM (SELECT * FROM rw.main.RW_TARGET4 EXCEPT ALL SELECT * FROM rw.main.RW_TYPES4);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM rw.main.RW_TYPES4 EXCEPT ALL SELECT * FROM rw.main.RW_TARGET4);
+----
+0
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_TARGET4');
+
 # DuckDB types into the Firebird 4 types
 statement ok
 SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET4 VALUES (?, ?, ?, ?, ?, ?, ?)',

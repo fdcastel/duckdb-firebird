@@ -338,6 +338,13 @@ static void LoadInternal(ExtensionLoader &loader) {
     // How long a Firebird write waits for a lock held by another
     // transaction before it fails.
     config.AddExtensionOption(
+        "firebird_write_batch_size",
+        "Rows per batch for Firebird writes (firebird_execute with source, INSERT into an ATTACH opened "
+        "with READ_WRITE) on Firebird 4+ servers (IBatch). 0 (default) = one execution per row. Firebird 4 "
+        "batches only plain INSERT/UPDATE/DELETE; statements with BLOB parameters always run per row.",
+        LogicalType::BIGINT,
+        Value::BIGINT(0));
+    config.AddExtensionOption(
         "firebird_write_lock_timeout",
         "Seconds a Firebird write (firebird_execute, INSERT into an ATTACH opened with "
         "READ_WRITE) waits for a row lock held by another transaction before failing "
