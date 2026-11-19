@@ -143,9 +143,9 @@ SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID
   the client sees the row. `INSERT INTO fb.main.T` was already safe.
   `scripts/check_execute_fetchone.py` checks it with the Python client:
   `fetchone()`, close, look again from a new connection. Before the change
-  the row was missing. On DuckDB v2.0 (built, not tested) the statement
-  properties have no output type, so this is not applied; read results
-  fully there.
+  the row was missing. DuckDB 2.0 has no output type to set, so there
+  `firebird_execute` commits its own write in autocommit instead; see
+  "DuckDB 2.0" below.
 - **DDL:** allowed and committed with the transaction. See "DDL and the
   ATTACH's tables" below for how `fb.main` follows it.
 - **CREATE DATABASE:** a statement starting with `CREATE DATABASE` runs
