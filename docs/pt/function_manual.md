@@ -167,8 +167,8 @@ enfraquecem essa garantia no Firebird 4, 5 e master:
 
 Os dois valem para o snapshot de um scan particionado, inclusive com
 `partition_by = 'dbkey'`, e para o snapshot de transacao, em que a janela
-de entrada dura a transacao DuckDB inteira. A extensao e somente leitura,
-entao os dados gravados nunca correm risco; so a consistencia do que um scan
+de entrada dura a transacao DuckDB inteira. Os scans so leem, entao os
+dados gravados nunca correm risco; so a consistencia do que um scan
 ou uma transacao le. Esta nota sera atualizada quando as correcoes forem
 lancadas.
 
@@ -499,6 +499,15 @@ ATTACH 'C:/dados/empresa.fdb' AS fb
  numeric_widen_int64 true);
 ```
 
+O ATTACH e somente leitura, a menos que seja aberto com a opcao
+`READ_WRITE` do DuckDB, que permite escritas via
+[`firebird_execute`](#firebird_executealias-sql):
+
+```sql
+ATTACH 'database=C:/dados/empresa.fdb user=APP_WRITER password=secret'
+  AS fb (TYPE firebird, READ_WRITE);
+```
+
 Desde a v1.2.1, `none_encoding` e `none_pushdown` tambem sao aceitos dentro
 da propria string de conexao, nas duas formas suportadas — query de URI
 (`firebird://usuario:senha@host:3050/path?charset=UTF8&none_encoding=win1252&none_pushdown=true`)
@@ -691,6 +700,9 @@ Os dois argumentos podem ser qualquer expressao constante, por exemplo
   - `EXECUTE STATEMENT ... ON EXTERNAL DATA SOURCE`, na transacao de quem
     chama ou `WITH AUTONOMOUS TRANSACTION` (testado contra o proprio
     banco).
+
+  Vale tambem num ATTACH aberto com `READ_WRITE`: `firebird_query` roda no
+  pool de leitura, nunca numa conexao de escrita.
 - **Onde o somente leitura para.**
   - Sequences nao sao transacionais: `GEN_ID(G, 1)` ou `NEXT VALUE FOR G`
     no `SELECT` avanca `G`, e o avanco fica.
@@ -715,6 +727,88 @@ Os dois argumentos podem ser qualquer expressao constante, por exemplo
 - **Preparado duas vezes.** O comando e preparado no bind (para conhecer
   as colunas) e de novo ao executar. Se as colunas mudarem nesse
   intervalo, a consulta falha e pede para ser executada de novo.
+
+### `firebird_execute(alias, sql)`
+
+Executa um comando Firebird (DML, DDL, `EXECUTE PROCEDURE`,
+`EXECUTE BLOCK`) num ATTACH aberto com `READ_WRITE`, dentro da transacao de
+escrita Firebird da transacao DuckDB.
+
+```sql
+ATTACH 'database=C:/data/erp.fdb;user=APP_WRITER;password=secret'
+  AS fb (TYPE firebird, READ_WRITE);
+
+SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID = 1');
+SELECT * FROM firebird_execute('fb', 'EXECUTE PROCEDURE SP_CLOSE_DAY(CURRENT_DATE)');
+```
+
+| Argumento | Tipo | Descricao |
+|---|---|---|
+| `alias` | VARCHAR | Nome de um ATTACH `TYPE firebird` aberto com `READ_WRITE` |
+| `sql` | VARCHAR | Um comando Firebird, como o Firebird o executa |
+
+Retorna uma linha:
+
+| Coluna | Tipo | Descricao |
+|---|---|---|
+| `rows_affected` | BIGINT | Linhas inseridas + atualizadas + excluidas, como o Firebird informa; 0 para DDL; `NULL` para um comando que retorna linhas |
+| `executions` | BIGINT | 1 |
+
+- **Opt-in.** Escrever exige a opcao `READ_WRITE` do proprio ATTACH do
+  DuckDB. Sem ela, e num ATTACH `READ_ONLY`, a chamada falha no bind e
+  cita a opcao. Um ATTACH sem `READ_WRITE` nunca abre conexao de escrita.
+- **As transacoes seguem as do DuckDB.** As escritas rodam num segundo pool
+  de conexoes do ATTACH, nunca nas conexoes que servem leituras, numa
+  transacao read-write: `read_committed`, `rec_version`, esperando ate
+  `firebird_write_lock_timeout` segundos por um lock de linha de outra
+  transacao (depois, "update conflicts with concurrent update"). Em
+  autocommit cada chamada e uma transacao Firebird; entre `BEGIN` e
+  `COMMIT`, todas as escritas da transacao DuckDB sao uma transacao
+  Firebird, confirmada ou desfeita com ela. `SET TRANSACTION`, `COMMIT` e
+  `ROLLBACK` em `sql` sao recusados. Como em qualquer transacao DuckDB, uma
+  transacao escreve em um unico banco anexado.
+- **Leituras nao veem escritas nao confirmadas.** Os scans e o
+  `firebird_query` mantem suas conexoes e transacao read-only, e veem uma
+  escrita depois do commit.
+- **Comandos que retornam linhas** (um `SELECT`, uma procedure
+  selecionavel, um `EXECUTE BLOCK` com `SUSPEND`) rodam e suas linhas sao
+  lidas e descartadas, para que as escritas de uma procedure selecionavel
+  acontecam, como no isql. `rows_affected` e `NULL`. Para ler linhas, use
+  `firebird_query`.
+- **Sem parametros.** Um comando com `?` e recusado: escreva os valores no
+  `sql`.
+- **DDL.** `CREATE`, `ALTER` e `DROP` rodam como qualquer comando. Depois do
+  commit, o ATTACH carrega suas tabelas de novo, e `fb.main` mostra a
+  mudanca sem novo ATTACH. Antes do DDL, o ATTACH fecha suas conexoes
+  ociosas: uma conexao Firebird ociosa guarda no cache de metadados as
+  tabelas que usou, e o Firebird recusa alterar ou excluir essas tabelas
+  enquanto ela existir ("object ... is in use"). Para DDL feito fora deste
+  ATTACH, veja `firebird_clear_cache`.
+- **A escrita fica mesmo se o cliente para de ler.** Um cliente que le a
+  linha com `fetchone()` e fecha a conexao mantem a escrita. No DuckDB 1.5
+  o resultado do comando e materializado, como o DuckDB faz para
+  `INSERT`. No DuckDB 2.0, em autocommit, a chamada confirma sua escrita
+  Firebird antes de retornar a linha; assim, se um comando DuckDB fizer
+  duas chamadas a `firebird_execute` e a segunda falhar, a primeira fica
+  confirmada. Dentro de `BEGIN ... COMMIT` as duas linhas se comportam
+  igual.
+- **Telemetria.** Cada chamada deixa um registro em
+  `firebird_last_query()` / `firebird_query_log()`: o comando em
+  `remote_sql`, `operation = 'execute'`, `write_mode = 'row'`,
+  `rows_written` (1) e `rows_affected`; em caso de falha, o erro.
+
+### `firebird_clear_cache(alias)`
+
+Esquece as tabelas que um ATTACH carregou, para que a proxima query carregue
+de novo a lista de tabelas e as colunas, e fecha as conexoes ociosas do
+ATTACH. Use depois de DDL feito fora deste ATTACH; o DDL via
+`firebird_execute` faz isso quando sua transacao e confirmada.
+
+```sql
+SELECT * FROM firebird_clear_cache('fb');
+```
+
+Retorna uma linha, `cleared BOOLEAN` (`true`).
 
 ### `firebird_attach_sql(connection_string [, schema])`
 
@@ -1437,6 +1531,12 @@ Saida compartilhada com `firebird_query_log()`:
 - `partition_method`: como a tabela foi dividida: `none` (uma particao),
   `pk` (faixas de PK) ou `dbkey` (faixas de `RDB$DB_KEY`,
   `partition_by = 'dbkey'`).
+- `operation`: o que e o registro: `scan`, `query` (`firebird_query`) ou
+  `execute` (`firebird_execute`).
+- `write_mode`, `rows_written`, `rows_affected`: so para escritas; `NULL`
+  em leituras. `write_mode` e `row`; `rows_written` sao as execucoes;
+  `rows_affected` sao as contagens de registros do Firebird (`NULL` quando
+  nao contadas).
 - `captured_at`: timestamp de captura.
 - `error_message`: erro sanitizado, vazio quando a query terminou limpa.
 - `limit_pushed`: limite `ROWS` realmente empurrado ao Firebird
@@ -1452,8 +1552,9 @@ As tres ultimas (`limit_pushed` / `offset_pushed` / `not_pushed_reasons`)
 sao as colunas de explicabilidade de pushdown (Fase 4 #3). Deixam explicito
 o que de paginacao chegou ao Firebird e por que um filtro ficou local, sem
 funcao nova. `bytes_read_estimate` (G5), `snapshot_mode` e
-`partition_method` entram como colunas aditivas no fim - o schema agora
-tem 21 colunas, compartilhado por `firebird_last_query()` e
+`partition_method`, e depois `operation`, `write_mode`, `rows_written` e
+`rows_affected`, entram como colunas aditivas no fim - o schema agora
+tem 25 colunas, compartilhado por `firebird_last_query()` e
 `firebird_query_log()`. As razoes sao factuais e
 coarse, nao um trace de planner:
 
@@ -1697,7 +1798,7 @@ FROM firebird_explain_pushdown(
 
 Mostra um historico curto das queries Firebird tentadas na conexao DuckDB
 atual. O log e desligado por padrao. Cada linha carrega o mesmo schema de
-telemetria de 21 colunas do `firebird_last_query()` - incluindo
+telemetria de 25 colunas do `firebird_last_query()` - incluindo
 `bytes_read_estimate`, entao o log rotacionado preserva as estimativas de
 transferencia por query da sessao.
 
@@ -2188,6 +2289,13 @@ servidor libera o snapshot de uma transacao DuckDB quando passam esses
 segundos entre o fim de um statement e o proximo scan do `ATTACH` na
 transacao; esse scan entao falha. Veja "Um snapshot por transacao DuckDB
 (`transaction_snapshot`)".
+
+### `SET firebird_write_lock_timeout = SEGUNDOS`
+
+Quanto tempo uma escrita Firebird (`firebird_execute`) espera por um lock de
+linha de outra transacao antes de falhar com "update conflicts with
+concurrent update". Padrao 10; `0` falha na hora (sem espera); no maximo
+32767. Lido quando a transacao de escrita comeca.
 
 ### `SET firebird_dummy_packet_interval = SEGUNDOS`
 
