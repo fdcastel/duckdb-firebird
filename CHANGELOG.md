@@ -53,6 +53,11 @@
   name the same row as one row at a time. `rows_affected` of a batched
   INSERT INTO holds the record counts. The Firebird 5.0.3 OO API headers
   are vendored for it (IDPL).
+- `firebird_execute` runs `CREATE DATABASE` too: it creates another
+  database without an attachment (`isc_dsql_execute_immediate`), with the
+  ATTACH's dialect. The statement carries a password, so errors never
+  quote it and the query log records `CREATE DATABASE <statement not
+  logged>`.
 - `firebird_last_query()` / `firebird_query_log()` gain four columns (25
   in all): `operation` (`scan`, `query`, `execute`, `insert`), and for writes
   `write_mode`, `rows_written` and `rows_affected`.

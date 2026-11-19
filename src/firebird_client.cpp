@@ -48,6 +48,7 @@
 #define isc_commit_transaction       (::duckdb::fbapi().isc_commit_transaction)
 #define isc_create_blob2             (::duckdb::fbapi().isc_create_blob2)
 #define isc_put_segment              (::duckdb::fbapi().isc_put_segment)
+#define isc_dsql_execute_immediate   (::duckdb::fbapi().isc_dsql_execute_immediate)
 
 namespace duckdb {
 
@@ -974,6 +975,52 @@ int FirebirdConnection::EngineMajor() {
 
 std::string FirebirdStatusText(const ISC_STATUS *status) {
     return StatusText(status);
+}
+
+bool IsCreateDatabaseStatement(const std::string &sql) {
+    size_t i = 0;
+    const size_t n = sql.size();
+    // Skip whitespace and comments.
+    while (i < n) {
+        if (std::isspace(static_cast<unsigned char>(sql[i]))) {
+            ++i;
+        } else if (sql.compare(i, 2, "--") == 0) {
+            while (i < n && sql[i] != '\n') ++i;
+        } else if (sql.compare(i, 2, "/*") == 0) {
+            auto end = sql.find("*/", i + 2);
+            i = end == std::string::npos ? n : end + 2;
+        } else {
+            break;
+        }
+    }
+    auto word = [&](const char *w) {
+        const size_t len = std::strlen(w);
+        if (i + len > n) return false;
+        for (size_t k = 0; k < len; ++k) {
+            if (std::toupper(static_cast<unsigned char>(sql[i + k])) != w[k]) return false;
+        }
+        if (i + len < n && !std::isspace(static_cast<unsigned char>(sql[i + len]))) return false;
+        i += len;
+        while (i < n && std::isspace(static_cast<unsigned char>(sql[i]))) ++i;
+        return true;
+    };
+    return word("CREATE") && word("DATABASE");
+}
+
+void FirebirdCreateDatabase(const std::string &sql, int dialect) {
+    isc_db_handle db = 0;
+    isc_tr_handle tr = 0;
+    ISC_STATUS status[20] = {};
+    isc_dsql_execute_immediate(status, &db, &tr, 0, sql.c_str(), static_cast<unsigned short>(dialect),
+                               nullptr);
+    // The statement carries the password: never quote it.
+    if (status[0] == 1 && status[1] != 0) {
+        throw IOException("CREATE DATABASE failed: " + StatusText(status));
+    }
+    if (db) {
+        ISC_STATUS detach_status[20] = {};
+        isc_detach_database(detach_status, &db);
+    }
 }
 
 std::unique_ptr<FirebirdStatement> FirebirdConnection::OpenCursor(const std::string &sql) {

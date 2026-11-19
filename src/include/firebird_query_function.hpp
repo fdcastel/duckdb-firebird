@@ -20,6 +20,7 @@ struct FirebirdAttachHandle {
     bool write_enabled = false;
     // ATTACH ... (READ_ONLY), or a read-only DuckDB database
     bool read_only = false;
+    int dialect = 3;
 };
 
 // The connection holding the current DuckDB transaction's Firebird write
