@@ -884,6 +884,11 @@ Retorna uma linha:
   tabelas que usou, e o Firebird recusa alterar ou excluir essas tabelas
   enquanto ela existir ("object ... is in use"). Para DDL feito fora deste
   ATTACH, veja `firebird_clear_cache`.
+- **`CREATE DATABASE`.** Um comando `CREATE DATABASE` (que cita seu
+  proprio servidor, usuario e senha) cria outro banco, fora da transacao
+  deste ATTACH, com o dialeto SQL do ATTACH. Seus erros nunca citam o
+  comando, e o log de queries o registra como
+  `CREATE DATABASE <statement not logged>`.
 - **A escrita fica mesmo se o cliente para de ler.** Um cliente que le a
   linha com `fetchone()` e fecha a conexao mantem a escrita. No DuckDB 1.5
   o resultado do comando e materializado, como o DuckDB faz para
