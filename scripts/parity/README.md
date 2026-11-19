@@ -126,4 +126,27 @@ Results: Firebird 5.0.4, Windows, server on the same host, extension a400738, of
 - **`sticky_null`:** the official ODBC driver stores NULL for every value that follows a NULL on a parameter whose source type differs from the column type (firebird-odbc-driver issue 300). Here that's 999 of the 1,000 non-NULL rows. Both native paths store every value.
 - **`types`:** ODBC stores `TIME '23:59:59.9999'` as `23:59:59`, dropping the fractional seconds. Every value round-trips natively: 150 KB text BLOB, pre-1900 dates, `NUMERIC(18,4)` extremes, UTF-8 text, BOOLEAN.
 - **`floor`:** a statement that does nothing costs 56 µs per row natively and 95 µs through ODBC. On the same host, a simple INSERT takes 58 µs per row, so nearly all of it is per-row round-trip overhead. That's the case for batching.
-- **Known gap:** DDL run through `firebird_execute` doesn't refresh the ATTACH catalog. The script re-attaches before `INSERT INTO fb.main.T` for that reason.
+- **DDL:** `firebird_execute` refreshes the ATTACH's tables when DDL commits, so `INSERT INTO fb.main.T` sees a table the script just recreated, with no re-attach.
+
+### Batched writes (`--batch-sizes`, Firebird 4+)
+
+`SET firebird_write_batch_size = N` sends N rows per Firebird `IBatch` round trip instead of one.
+- Firebird 5 batches every statement, `EXECUTE BLOCK` included.
+- Firebird 4 batches plain INSERT/UPDATE/DELETE only. It rejects a batched `EXECUTE BLOCK` with "request synchronization error".
+- Firebird 3, and statements with BLOB parameters, stay per row.
+
+`upsert` is an `EXECUTE BLOCK` `UPDATE OR INSERT ... MATCHING (ID)` into a table with a primary key, with the same rows as `bulk`.
+
+Firebird 5.0.4, Windows, server on the same host, 1,000,000 rows, extension fb73b5f. Every row reads back exact at every batch size; `sticky_null` and `types` too.
+
+| case | ODBC | per row | batch 100 | batch 1000 | batch 10000 |
+|---|---:|---:|---:|---:|---:|
+| `bulk`, `firebird_execute` | 121.5 s | 68.0 s | 4.4 s | 2.9 s | **2.7 s** |
+| `bulk`, `INSERT INTO` | | 61.7 s | 3.9 s | 2.9 s | **2.6 s** |
+| `upsert`, `firebird_execute` | 131.9 s | 69.5 s | 8.8 s | 7.8 s | **7.5 s** |
+| `floor` | 100.8 µs/row | 54.0 µs/row | 2.4 µs/row | 1.3 µs/row | 1.4 µs/row |
+
+- **The gain:** with no network at all, batching takes the insert 25× and the upsert 9× past per-row native. Most of it arrives by batch 1000.
+- **Over a network:** with 1 ms of round trip, 100,000 rows took 91.5 s → 0.36 s for `bulk` and 89.8 s → 0.70 s for `upsert`, at batch 10000.
+- **Where it stops:** a statement with heavy server work gains less. A 25-parameter `EXECUTE BLOCK` upsert with lookups, into a large real-world table, went from 24 s per row to 11 s at batch 1000 (ODBC: 32.5 s).
+- **Wide rows:** the batch buffer is 16 MB, and a batch is sent before it fills. So `firebird_write_batch_size` is an upper bound for wide rows, never an error.
