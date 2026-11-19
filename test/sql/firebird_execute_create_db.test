@@ -1,0 +1,55 @@
+# name: test/sql/firebird_execute_create_db.test
+# description: CREATE DATABASE through firebird_execute
+# group: [firebird]
+#
+# FIREBIRD_RW_CREATE_PREFIX is '<server>:<directory>/' as the Firebird server
+# sees it (for example 'localhost/3050:/var/lib/firebird/data/'). Each run
+# creates a database with a new name there.
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+require-env FIREBIRD_RW_CREATE_PREFIX
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);
+
+statement ok
+SET VARIABLE new_db = '${FIREBIRD_RW_CREATE_PREFIX}' || 'created_' || replace(uuid()::VARCHAR, '-', '') || '.fdb';
+
+statement ok
+SET VARIABLE create_sql = 'CREATE DATABASE ''' || getvariable('new_db') ||
+    ''' USER ''SYSDBA'' PASSWORD ''masterkey'' PAGE_SIZE 8192 DEFAULT CHARACTER SET UTF8';
+
+query II
+SELECT * FROM firebird_execute('rw', getvariable('create_sql'));
+----
+0	1
+
+# It exists now: creating it again fails, and the error does not quote the
+# statement (it carries the password).
+statement error
+SELECT * FROM firebird_execute('rw', getvariable('create_sql'));
+----
+<REGEX>:.*CREATE DATABASE failed.*
+
+statement error
+SELECT * FROM firebird_execute('rw', getvariable('create_sql'));
+----
+<!REGEX>:.*masterkey.*
+
+# The query log never holds the statement either (it carries a password).
+query II
+SELECT operation, remote_sql FROM firebird_last_query();
+----
+execute	CREATE DATABASE <statement not logged>
+
+# Needs the READ_WRITE opt-in like any other write.
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS ro (TYPE firebird);
+
+statement error
+SELECT * FROM firebird_execute('ro', getvariable('create_sql'));
+----
+READ_WRITE
