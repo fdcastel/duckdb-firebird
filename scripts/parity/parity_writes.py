@@ -11,6 +11,8 @@ Cases:
                 (firebird-odbc-driver issue 300)
   types         one row per value of every common type family, NULLs included
   bulk          --rows rows (default 1,000,000) of INTEGER / DATE / NUMERIC(18,4) / VARCHAR, timed
+  upsert        the bulk rows through an EXECUTE BLOCK UPDATE OR INSERT ... MATCHING (ID) into a table
+                with a primary key (not INSERT INTO), timed
   floor         --rows executions of a no-op EXECUTE BLOCK (X INTEGER = ?): the per-row cost of
                 one round trip, with no server work
 
@@ -63,6 +65,12 @@ BULK_SQL = ("SELECT i::INTEGER AS id, DATE '2020-01-01' + (i % 3000)::INTEGER AS
             "(i * 1.2345)::DECIMAL(18,4) AS n, 'row ' || i AS s FROM range({rows}) t(i)")
 BULK_DDL = "RECREATE TABLE {t} (ID INTEGER NOT NULL, D DATE, N NUMERIC(18,4), S VARCHAR(60))"
 BULK_DML = "INSERT INTO {t} (ID, D, N, S) VALUES (?, ?, ?, ?)"
+
+# The write template of a typical ETL: an EXECUTE BLOCK upsert into a table with a primary key
+# (firebird_execute / odbc_copy only; INSERT INTO can't upsert). Same rows as `bulk`.
+UPSERT_DDL = "RECREATE TABLE {t} (ID INTEGER NOT NULL PRIMARY KEY, D DATE, N NUMERIC(18,4), S VARCHAR(60))"
+UPSERT_DML = ("EXECUTE BLOCK (ID INTEGER = ?, D DATE = ?, N NUMERIC(18,4) = ?, S VARCHAR(60) = ?) AS BEGIN "
+              "UPDATE OR INSERT INTO {t} (ID, D, N, S) VALUES (:ID, :D, :N, :S) MATCHING (ID); END")
 
 
 def connect(args) -> duckdb.DuckDBPyConnection:
@@ -146,12 +154,15 @@ def main() -> None:
         ("sticky_null", STICKY_DDL, STICKY_DML, STICKY_SQL),
         ("types", TYPES_DDL, TYPES_DML, TYPES_SQL),
         ("bulk", BULK_DDL, BULK_DML, BULK_SQL.format(rows=args.rows)),
+        ("upsert", UPSERT_DDL, UPSERT_DML, BULK_SQL.format(rows=args.rows)),
     ]
     code = {"odbc_copy": "ODBC", "firebird_execute": "FBX", "insert_into": "INS"}
     lines = ["| case | path | seconds | rows/s | missing | not sent | result |", "|---|---|---:|---:|---:|---:|---|"]
     for case, ddl, dml, source in cases:
         rows = con.execute(f"SELECT count(*) FROM ({source})").fetchone()[0]
         for path, size in variants:
+            if case == "upsert" and path == "insert_into":
+                continue  # INSERT INTO can't upsert
             label = path if size is None else f"{path} (batch {size})"
             if not set_batch_size(con, size):
                 lines.append(f"| `{case}` | {label} | | | | | build has no firebird_write_batch_size |")
