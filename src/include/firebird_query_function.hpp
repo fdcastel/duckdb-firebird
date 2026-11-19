@@ -28,6 +28,10 @@ struct FirebirdAttachHandle {
 FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &catalog,
                                                int64_t lock_timeout_s);
 
+// Commits the current DuckDB transaction's Firebird write transaction on
+// this ATTACH now, if one was started (a later write starts a new one).
+void CommitFirebirdWriteNow(ClientContext &context, Catalog &catalog);
+
 // firebird_execute ran a DDL statement in the current DuckDB transaction:
 // the ATTACH's table cache is cleared when that transaction commits.
 void NoteFirebirdDdl(ClientContext &context, Catalog &catalog);

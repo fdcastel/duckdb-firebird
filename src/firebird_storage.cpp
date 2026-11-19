@@ -1528,6 +1528,10 @@ FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &
     return tx.WriteConnection(lock_timeout_s);
 }
 
+void CommitFirebirdWriteNow(ClientContext &context, Catalog &catalog) {
+    Transaction::Get(context, catalog).Cast<FirebirdTransaction>().EndWrite(true);
+}
+
 void NoteFirebirdDdl(ClientContext &context, Catalog &catalog) {
     Transaction::Get(context, catalog).Cast<FirebirdTransaction>().NoteDdl();
 }

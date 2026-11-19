@@ -379,6 +379,17 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                                         static_cast<long long>(executions), result->GetError());
         }
     }
+#ifdef FIREBIRD_DUCKDB_V2
+    // DuckDB 2.0 runs this statement's result lazily and rolls the statement
+    // back when its client closes before reading it all (fetchone(), then
+    // close): the write would be lost without an error. In autocommit the
+    // statement is the transaction, so commit the Firebird write here,
+    // before the row is returned. Inside BEGIN ... COMMIT nothing changes.
+    // (1.5 materializes the result instead; see the bind.)
+    if (context.transaction.IsAutoCommit() && !create_db) {
+        CommitFirebirdWriteNow(context, *bind.attach.catalog);
+    }
+#endif
     } catch (std::exception &ex) {
         obs->SetWriteResult(write_mode, executions, -1);
         obs->SetError(ErrorData(ex).RawMessage());

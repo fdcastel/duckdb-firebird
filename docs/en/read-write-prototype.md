@@ -527,15 +527,23 @@ differences found, and what changed:
   only the named columns are sent. `firebird_insert.test` checks it with
   a table whose columns have defaults (`RW_DEFAULTS`). On 2.0 without the
   change, the test fails with `NULL <> dflt`.
-- **The commit trap.** 2.0 has no `output_type` in its statement
-  properties. It streams a SELECT only while the statement modifies no
-  database, so `firebird_execute` now also registers its write at bind
-  (`RegisterDBModify`). That materializes it on 2.0 too, and marks it as
-  a write on both lines.
+- **The commit trap.** DuckDB 2.0 runs a statement's result lazily and,
+  when a client closes before reading all of it, aborts the statement
+  and rolls back what it wrote. 2.0 has no `output_type` to force
+  materialization, and registering the write at bind (`RegisterDBModify`,
+  kept: it marks the statement as a write) does not help: it only makes
+  the abort roll back. So on 2.0, in autocommit, `firebird_execute`
+  commits its Firebird write transaction itself before it returns its
+  row. That is a statement-level commit, as an ODBC autocommit does.
+  Inside `BEGIN ... COMMIT` nothing changes. The difference from 1.5: if
+  one DuckDB statement runs two `firebird_execute` calls and the second
+  fails, the first stays committed on 2.0.
   `scripts/check_execute_fetchone.py` runs on every leg with the Python
-  package of the leg's DuckDB version. It can't run locally on 2.0: this
-  machine's 2.0 build carries a development version stamp that the
-  2.0.0 Python package refuses to load.
+  package of the leg's DuckDB version. On 2.0 it failed with only
+  `RegisterDBModify` (2 of 3 cases lost their writes, on all three 2.0
+  legs), which is how this was found. It can't run locally on 2.0: this
+  machine's 2.0 build carries a development version stamp that the 2.0.0
+  Python package refuses to load.
 - **Batches on 2.0:** the per-row and batched paths behave the same. The
   INSERT batch test failed only because of the first point (BLOB columns
   the INSERT didn't name were being sent, which forces the per-row path).
