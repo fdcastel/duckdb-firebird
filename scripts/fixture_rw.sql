@@ -9,6 +9,8 @@
  *              depend on isql's connection character set.
  *   RW_TARGET: the same columns as RW_TYPES, empty: parameter round trips.
  *   CUSTOMER : an upsert target (EXECUTE BLOCK ... UPDATE OR INSERT).
+ *   RW_DEFAULTS: column defaults, for INSERTs that don't name every column.
+ *   RW_COMPUTED: a COMPUTED BY column, which an INSERT must not send.
  *   SP_SEQ   : selectable procedure returning N rows.
  *   RW_LOG / SP_WRITE: a log table, and a selectable procedure that writes.
  */
@@ -81,6 +83,20 @@ CREATE TABLE CUSTOMER (
     ID   INTEGER NOT NULL PRIMARY KEY,
     NAME VARCHAR(40),
     CITY VARCHAR(30)
+);
+
+/* A COMPUTED BY column: an INSERT that sends it is refused at prepare. */
+CREATE TABLE RW_COMPUTED (
+    ID    INTEGER NOT NULL,
+    TWICE COMPUTED BY (ID * 2)
+);
+
+/* Column defaults: an INSERT that doesn't name a column gets Firebird's
+ * default, not NULL. */
+CREATE TABLE RW_DEFAULTS (
+    ID   INTEGER NOT NULL PRIMARY KEY,
+    NOTE VARCHAR(10) DEFAULT 'dflt',
+    QTY  INTEGER DEFAULT 7
 );
 
 CREATE TABLE RW_LOG (
