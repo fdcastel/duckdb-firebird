@@ -6,7 +6,7 @@ values, pushdown metadata, and per-scan metrics. All state is scoped
 to the current DuckDB `ClientContext` — one session never reads
 another session's queries.
 
-Both functions share the same 21-column schema. The difference is the
+Both functions share the same 25-column schema. The difference is the
 window: `firebird_last_query()` returns at most one row (the most
 recent attempt on this connection); `firebird_query_log()` returns a
 ring buffer, opt-in via setting.
@@ -56,12 +56,17 @@ connection.
 | `bytes_read_estimate` | BIGINT | **ESTIMATE** (G5) of Firebird payload bytes pulled by this query: `rows_read × XSQLDA row width + BLOB segment bytes read`. Definition and exclusions below. |
 | `snapshot_mode` | VARCHAR | How the scan's partitions relate transactionally: `serial` (one partition), `shared` (all partitions read one Firebird snapshot; Firebird 4+), `independent` (each partition used its own read-committed transaction: Firebird 3, or the shared snapshot could not be established), `transaction` (the scan read the snapshot of its DuckDB transaction: ATTACH with the opt-in transaction snapshot, Firebird 4+). See below. |
 | `partition_method` | VARCHAR | How the table was split: `none` (one partition), `pk` (primary-key ranges) or `dbkey` (`RDB$DB_KEY` ranges, `partition_by = 'dbkey'`). |
+| `operation` | VARCHAR | What the record is: `scan` (`firebird_scan` or a table of an `ATTACH`), `query` (`firebird_query`), `execute` (`firebird_execute`) or `insert` (`INSERT INTO` a table of an `ATTACH` opened with `READ_WRITE`). |
+| `write_mode` | VARCHAR | For writes: `row` (one execution per row) or `batch` (Firebird 4+ batched execution). `NULL` for reads. |
+| `rows_written` | BIGINT | For writes: executions sent to Firebird. `NULL` for reads. |
+| `rows_affected` | BIGINT | For writes: Firebird's record counts. `NULL` for reads and when not counted (`count_rows := false`, a statement that returns rows, a batched `EXECUTE BLOCK`, a per-row INSERT). |
 
 `limit_pushed` / `offset_pushed` / `not_pushed_reasons` are the Phase 4 #3
 pushdown-explainability columns. They make it explicit what paging reached
 Firebird and why a filter stayed local, without adding a new function.
 `bytes_read_estimate` (G5), `snapshot_mode` and `partition_method` are
-additive tail columns — the schema is now 21 columns, shared by
+additive tail columns. `operation`, `write_mode`, `rows_written` and
+`rows_affected` record writes. The schema is now 25 columns, shared by
 `firebird_last_query()` and `firebird_query_log()`.
 
 `snapshot_mode` tells whether the partitions of a parallel scan saw one
