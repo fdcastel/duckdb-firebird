@@ -25,5 +25,11 @@ copyright header. The full license text is available at
 Headers were copied from a Firebird 5.0 install
 (`include/ibase.h`, `include/firebird/*.h`,
 `include/firebird/impl/*.h`). The ISC entry-point surface they
-describe is stable across Firebird 3 / 4 / 5; updates are
-unnecessary unless we start consuming OO-API symbols.
+describe is stable across Firebird 3 / 4 / 5.
+
+`firebird/Interface.h` and `firebird/IdlFbInterfaces.h` (the OO API,
+used only for Firebird 4+ batched writes through `IBatch`) come from the
+same Firebird 5.0.3 install as `ibase.h`. Their calls go through
+interface vtables reached from `fb_get_master_interface()` and the
+`fb_get_statement_interface()` / `fb_get_transaction_interface()`
+bridges, which the loader resolves at runtime like the ISC entry points.
