@@ -15,6 +15,124 @@ Test data is synthetic: `scripts/fixture_rw.sql` (Firebird 3+) and
 database (`rw.fdb`; `FIREBIRD_RW_DB`, and `FIREBIRD_RW4_DB` on Firebird
 4/5).
 
+## Why writes
+
+The roadmap lists writes under "Out of scope (rejected for now)". It gives
+a use case and two risks:
+
+> The use case is "lift Firebird OLTP data into DuckDB for analytics",
+> not "use Firebird through DuckDB". Adding writes changes the
+> transaction profile (`isc_tpb_read` is hard-wired) and the risk
+> envelope (a bug deletes user data).
+
+Each point, with what the prototype does about it.
+
+### The use case
+
+The prototype doesn't turn the extension into a way to run Firebird from
+DuckDB. It covers the step that comes after lifting the data: an ETL that
+reads Firebird into DuckDB usually writes something back, such as staging
+tables, upserted dimension rows or status flags. Today that write needs a
+second driver beside the extension (ODBC or a Python driver), with its own
+connection, transactions and type mapping. The usual one, the official
+Firebird ODBC driver, loses values on writes (see the evidence below).
+
+The surface stays small:
+- `firebird_execute(alias, sql)` runs one statement that the caller
+  wrote, once, or once per row of a DuckDB query (`source`).
+- `INSERT INTO fb.main.T ...` appends rows.
+- No UPDATE or DELETE through `fb.main`: DuckDB's binder refuses them
+  ("Can only update base table"); WP7 only sizes them.
+- No CREATE/ALTER/DROP through `fb.main`, and no DDL emission. DDL is SQL
+  the caller passes to `firebird_execute`.
+
+### The transaction profile
+
+The read side is unchanged. Scans and `firebird_query` keep the read pool
+and its transaction (`isc_tpb_read | isc_tpb_read_committed |
+isc_tpb_rec_version | isc_tpb_nowait | isc_tpb_no_auto_undo`), including
+the transaction snapshot coordinator.
+
+Writes get their own profile, beside it:
+- **A second connection pool per ATTACH.** A connection that held a write
+  transaction never serves a read. It returns to its pool on a fresh
+  read-only transaction.
+- **Its own TPB:** `write | read_committed | rec_version | wait`, with a
+  lock timeout (`firebird_write_lock_timeout`, default 10 s). A lock held
+  elsewhere gives "update conflicts with concurrent update", not a hang.
+- **Only behind an explicit `READ_WRITE` ATTACH.** Without it no write
+  connection is ever opened, and the extension behaves exactly as today.
+- **Transactions follow DuckDB's.** Autocommit gives one Firebird
+  transaction per statement. `BEGIN ... COMMIT` gives one for all its
+  writes. A rollback or an error rolls back. On DuckDB 2.0 a
+  `firebird_execute` in autocommit commits itself (see "DuckDB 2.0").
+
+`firebird_execute.test` checks that the read pool is still read-only after
+writes.
+
+### The risk envelope
+
+"A bug deletes user data" is the main risk. The prototype narrows it in
+three ways.
+
+**What can run:**
+- **Writes are opt-in, per ATTACH.** A plain ATTACH can't write, and
+  `READ_ONLY` refuses writes too.
+- **The extension writes no statement of its own except one.** The only
+  SQL it generates is `INSERT INTO "T" ("C1", ...) VALUES (?, ...)` for
+  `INSERT INTO fb.main.T`. It never generates an UPDATE or a DELETE. Every
+  other write is SQL the caller wrote, sent as written.
+
+**What a failure leaves:**
+- **All or nothing by default.** The first failing row stops the call,
+  and the DuckDB transaction rolls back every row. With `commit_every`,
+  the error names the rows already committed.
+- **No silent loss on commit.** A client that read one row and closed
+  used to lose the write (the "commit trap"). It is closed on DuckDB 1.5
+  and 2.0, and `scripts/check_execute_fetchone.py` checks it on every CI
+  leg.
+
+**What the values look like:**
+- **Every value is sent in an exact type (D6).** Firebird converts it with
+  the same rules as a literal in the SQL text. The tests read back the
+  stored values, not row counts.
+- **The tests catch what they claim to.** Builds broken on purpose (a
+  sticky NULL indicator, an ignored DECIMAL scale, a batch message that
+  keeps the previous row's NULL flags) fail them.
+
+Not covered yet: the password still travels in the ATTACH string, since
+the extension has no DuckDB secrets support. Errors and
+`duckdb_databases().path` are redacted (upstream PR 114).
+
+### Evidence
+
+`scripts/parity/parity_writes.py` (branch `parity-suite`) reproduces this
+on a synthetic database. It writes the same rows through ODBC,
+`firebird_execute(source)` and `INSERT INTO`, and reads every stored value
+back.
+
+Setup: Firebird 5.0.4, Windows, server on the same host, DuckDB 1.5.6,
+official ODBC driver 3.0.1.21.
+
+| case | ODBC | native, per row | native, batch 10000 (WP8) |
+|---|---|---|---|
+| NULL/value sequences, 2,000 rows | **999 values stored as NULL** | exact | exact |
+| one row per type family | **TIME fractions dropped** | exact | exact |
+| 1,000,000-row INSERT | 121.5 s, exact | 68.0 s, exact | 2.7 s, exact |
+| 1,000,000-row `EXECUTE BLOCK` upsert | 131.9 s, exact | 69.5 s, exact | 7.5 s, exact |
+
+- **Over a network,** with 1 ms of round trip and 100,000 rows, batching
+  takes the INSERT from 91.5 s to 0.36 s and the upsert from 89.8 s to
+  0.70 s.
+- **On a real ETL upsert** (25 parameters, lookups in an `EXECUTE BLOCK`,
+  100,000 rows into an ERP table on a 16.8 GB database), the time goes
+  from 32.5 s on ODBC to 24 s per row and 11 s at batch 1000. In one
+  parameter shape, ODBC stored NULL for **11,023 of 11,023** values, and
+  the native path stored all of them.
+
+The ODBC losses come from the driver: firebird-odbc-driver issue 300, and
+its fix is unreleased. The write path doesn't need that driver.
+
 ## WP1: `firebird_query(alias, sql)`
 
 ```sql
@@ -327,8 +445,8 @@ about 13,200 rows/s (one rough run, machine not otherwise measured).
 
 ### Gaps
 
-- One round trip per row; no batching (the legacy API has none; IBatch is
-  OO API only).
+- One round trip per row by default. Firebird 4+ can batch (WP8,
+  `firebird_write_batch_size`).
 - The ATTACH's catalog is read-only metadata: CREATE TABLE, ALTER, DROP,
   UPDATE and DELETE through `fb.main` are not supported (WP7 sizes UPDATE
   and DELETE).
