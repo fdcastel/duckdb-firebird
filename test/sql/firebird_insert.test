@@ -101,6 +101,30 @@ SELECT C_NUM9_3, C_VARCHAR_NONE, C_INTEGER FROM rw.main.RW_TARGET WHERE ID = 10;
 ----
 1.500	Ação	NULL
 
+# Omitted columns get Firebird's defaults, not NULL (DuckDB 2.0 hands the
+# INSERT every column; only the named ones are sent).
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_DEFAULTS');
+
+query I
+INSERT INTO rw.main.RW_DEFAULTS (ID) VALUES (1);
+----
+1
+
+query I
+INSERT INTO rw.main.RW_DEFAULTS (QTY, ID) VALUES (9, 2);
+----
+1
+
+query III
+SELECT ID, NOTE, QTY FROM ro.main.RW_DEFAULTS ORDER BY ID;
+----
+1	dflt	7
+2	dflt	9
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_DEFAULTS');
+
 # --- Firebird's constraints and errors; everything rolls back ----------------------
 
 statement error

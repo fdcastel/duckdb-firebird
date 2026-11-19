@@ -56,10 +56,11 @@ class FirebirdInsert final : public PhysicalOperator {
 public:
     FirebirdInsert(PhysicalPlan &physical_plan, vector<LogicalType> types, idx_t estimated_cardinality,
                    Catalog &catalog, std::string table_name, std::string sql, vector<LogicalType> value_types,
-                   NoneEncoding none_encoding)
+                   vector<idx_t> input_columns, NoneEncoding none_encoding)
         : PhysicalOperator(physical_plan, PhysicalOperatorType::EXTENSION, std::move(types), estimated_cardinality),
           catalog_(catalog), table_name_(std::move(table_name)), sql_(std::move(sql)),
-          value_types_(std::move(value_types)), none_encoding_(none_encoding) {
+          value_types_(std::move(value_types)), input_columns_(std::move(input_columns)),
+          none_encoding_(none_encoding) {
     }
 
     string GetName() const override {
@@ -108,7 +109,7 @@ public:
         auto obs = GetObservabilityState(context.client);
         for (idx_t r = 0; r < chunk.size(); ++r) {
             try {
-                state.encoder->Encode(chunk, r);
+                state.encoder->Encode(chunk, r, input_columns_);
                 if (state.batch) {
                     state.batch->Add();
                 } else {
@@ -197,6 +198,9 @@ private:
     std::string table_name_;
     std::string sql_;
     vector<LogicalType> value_types_;
+    // Input chunk column of each parameter (DuckDB 2.0 passes every table
+    // column; only the ones the INSERT names are sent).
+    vector<idx_t> input_columns_;
     NoneEncoding none_encoding_;
 };
 
@@ -227,9 +231,42 @@ PhysicalOperator &PlanFirebirdInsert(ClientContext &, PhysicalPlanGenerator &pla
         throw BinderException("INSERT into Firebird table \"%s\": nothing to insert", Str(table.name));
     }
 
-    // Column names in the order of the input columns.
+    // Column names, and the input column that carries each one.
     const auto &columns = table.GetColumns();
     vector<std::string> names;
+    vector<idx_t> inputs;
+    vector<LogicalType> value_types;
+#ifdef FIREBIRD_DUCKDB_V2
+    // DuckDB 2.0 passes every column in table order, the ones the INSERT
+    // doesn't name filled with DuckDB's defaults (NULL here). Send only the
+    // named ones, so Firebird applies its own defaults, triggers and
+    // generators to the rest. 2.0 keeps the column map in the binder, not
+    // in LogicalInsert; what it leaves is this: the binder moves the bound
+    // default of every column the INSERT doesn't name into the input
+    // projection, so op.bound_defaults[i] is null exactly for those.
+    {
+        idx_t physical = 0;
+        for (auto &col : columns.Physical()) {
+            const idx_t index = physical++;
+            const bool named = index < op.bound_defaults.size() && op.bound_defaults[index] != nullptr;
+            if (!named) {
+                continue;
+            }
+            if (index >= plan->types.size()) {
+                throw InternalException("firebird insert: column %llu beyond the input",
+                                        static_cast<unsigned long long>(index));
+            }
+            names.push_back(Str(col.Name()));
+            inputs.push_back(index);
+            value_types.push_back(plan->types[index]);
+        }
+        if (names.empty()) {
+            throw BinderException("INSERT into Firebird table \"%s\": DEFAULT VALUES is not supported; use "
+                                  "firebird_execute() with INSERT ... DEFAULT VALUES",
+                                  Str(table.name));
+        }
+    }
+#else
     if (op.column_index_map.empty()) {
         for (auto &col : columns.Physical()) {
             names.push_back(Str(col.Name()));
@@ -260,6 +297,11 @@ PhysicalOperator &PlanFirebirdInsert(ClientContext &, PhysicalPlanGenerator &pla
                                 static_cast<unsigned long long>(names.size()),
                                 static_cast<unsigned long long>(plan->types.size()));
     }
+    for (idx_t i = 0; i < names.size(); ++i) {
+        inputs.push_back(i);
+    }
+    value_types = plan->types;
+#endif
 
     std::string sql = "INSERT INTO " + QuoteIdent(Str(table.name)) + " (";
     std::string marks;
@@ -270,7 +312,7 @@ PhysicalOperator &PlanFirebirdInsert(ClientContext &, PhysicalPlanGenerator &pla
     sql += ") VALUES (" + marks + ")";
 
     auto &insert = planner.Make<FirebirdInsert>(op.types, op.estimated_cardinality, catalog, Str(table.name), sql,
-                                                plan->types, none_encoding);
+                                                value_types, inputs, none_encoding);
     insert.children.push_back(*plan);
     return insert;
 }

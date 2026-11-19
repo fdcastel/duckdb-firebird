@@ -296,11 +296,13 @@ INSERT INTO fb.main.CUSTOMER (NAME, ID) VALUES ('Fa', 6);
   here, because the ATTACH declares no unique keys. `DEFAULT` inside a
   VALUES list becomes NULL: DuckDB fills it from the column defaults it
   knows, and the ATTACH doesn't declare Firebird's.
-- **DuckDB v2.0 (built, not tested):** v2.0 binds DEFAULT VALUES with
-  every column mapped to a NULL value, so the refusal above doesn't
-  fire. The INSERT then sends NULL for every column (seen in CI: Firebird
-  refused the NULL primary key). The prototype tests run on DuckDB 1.5.6
-  only.
+- **DuckDB 2.0:** the binder hands the INSERT every column in table
+  order, with DuckDB's defaults (NULL here) for the ones the INSERT
+  doesn't name, and keeps its column map to itself. The sink sends only
+  the named columns, so Firebird's own defaults, triggers and generators
+  apply on 2.0 as on 1.5. The named columns are those whose bound default
+  is still there: the binder moved the others into the input. With no
+  column named, as in DEFAULT VALUES, the INSERT is refused as on 1.5.
 - **Errors:** the first failing row stops the INSERT with "row N failed:
   <Firebird error>". The DuckDB transaction then rolls back, and with it
   every row of the INSERT.
@@ -500,3 +502,29 @@ Test: `test/sql/firebird_ddl_cache.test` (Firebird 3/4/5). It covers:
 
 On the code before this change, the same test fails at the first INSERT
 with "Table with name RW_DDL_A does not exist!".
+
+## DuckDB 2.0
+
+The prototype's tests run on DuckDB 2.0 with Firebird 3, 4 and 5 (the
+Linux matrix has a 2.0 leg for each). Locally, both DuckDB lines pass the
+full test list: 120 runs each on Firebird 3.0.13 / 4.0.6 / 5.0.3. The 2.0
+differences found, and what changed:
+
+- **INSERT sent every column.** DuckDB 2.0 passes all of them (see WP4),
+  so the columns an INSERT didn't name were written as NULL instead of
+  getting Firebird's defaults. DEFAULT VALUES was not refused either. Now
+  only the named columns are sent. `firebird_insert.test` checks it with
+  a table whose columns have defaults (`RW_DEFAULTS`). On 2.0 without the
+  change, the test fails with `NULL <> dflt`.
+- **The commit trap.** 2.0 has no `output_type` in its statement
+  properties. It streams a SELECT only while the statement modifies no
+  database, so `firebird_execute` now also registers its write at bind
+  (`RegisterDBModify`). That materializes it on 2.0 too, and marks it as
+  a write on both lines.
+  `scripts/check_execute_fetchone.py` runs on every leg with the Python
+  package of the leg's DuckDB version. It can't run locally on 2.0: this
+  machine's 2.0 build carries a development version stamp that the
+  2.0.0 Python package refuses to load.
+- **Batches on 2.0:** the per-row and batched paths behave the same. The
+  INSERT batch test failed only because of the first point (BLOB columns
+  the INSERT didn't name were being sent, which forces the per-row path).

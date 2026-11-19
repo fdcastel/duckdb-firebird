@@ -61,6 +61,15 @@ jobs:
             fb_image: firebirdsql/firebird:5-noble
             duckdb: v2.0.0
             name_suffix: " (DuckDB v2.0.0)"
+          # Read-write prototype: its tests on DuckDB 2.0 with every Firebird version.
+          - fb_major: 3
+            fb_image: firebirdsql/firebird:3-noble
+            duckdb: v2.0.0
+            name_suffix: " (DuckDB v2.0.0)"
+          - fb_major: 4
+            fb_image: firebirdsql/firebird:4-noble
+            duckdb: v2.0.0
+            name_suffix: " (DuckDB v2.0.0)"
     env:
       DUCKDB_VERSION: ${{ matrix.duckdb }}
 
@@ -410,10 +419,9 @@ jobs:
           # exported above); self-skips on FB3.
           ./build/release/test/unittest test/sql/firebird_type_compat.test
           # Read-write prototype (firebird_query; FB4+ types on FB4/FB5 only
-          # through FIREBIRD_RW4_DB) and connection-error redaction. The
-          # prototype targets DuckDB 1.5.6: on the v2.0 leg it is built,
-          # not tested.
-          if [ "${{ matrix.duckdb }}" = "v1.5.6" ]; then
+          # through FIREBIRD_RW4_DB) and connection-error redaction, on
+          # DuckDB 1.5.6 and 2.0.
+          if true; then
             ./build/release/test/unittest test/sql/firebird_query.test
             ./build/release/test/unittest test/sql/firebird_query_fb4.test
             ./build/release/test/unittest test/sql/firebird_secrets.test
@@ -428,11 +436,11 @@ jobs:
 
       - name: Writes commit when a client reads one row and closes (Python)
         # sqllogictest reads every result fully; this needs a real client
-        # that stops after fetchone(). Read-write prototype, DuckDB 1.5.6.
-        if: matrix.duckdb == 'v1.5.6'
+        # that stops after fetchone(). Read-write prototype; the Python
+        # package of the leg's DuckDB version (1.5.6 or 2.0.0).
         run: |
           python3 -m venv /tmp/pyduck
-          /tmp/pyduck/bin/pip install --quiet duckdb==1.5.6
+          /tmp/pyduck/bin/pip install --quiet "duckdb==${DUCKDB_VERSION#v}"
           /tmp/pyduck/bin/python scripts/check_execute_fetchone.py \
             "$GITHUB_WORKSPACE/build/release/extension/firebird/firebird.duckdb_extension" \
             "$FIREBIRD_RW_DB"

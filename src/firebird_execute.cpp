@@ -135,15 +135,24 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
         }
     }
     bind->attach = GetFirebirdAttachHandle(context, bind->alias, kFunctionName);
-#ifndef FIREBIRD_DUCKDB_V2
     // Run the whole statement before the client sees its result, as DuckDB
     // does for INSERT. A streamed result commits only once it is fully read:
     // a client that read the one row with fetchone() and closed the
-    // connection rolled every write back without an error.
+    // connection rolled every write back without an error. Registering the
+    // write is what makes DuckDB 2.0 materialize (it streams a SELECT only
+    // while it modifies no database); 1.5 needs the output type too.
     if (input.binder) {
-        input.binder->GetStatementProperties().output_type = QueryResultOutputType::FORCE_MATERIALIZED;
-    }
+        auto &properties = input.binder->GetStatementProperties();
+#ifndef FIREBIRD_DUCKDB_V2
+        properties.output_type = QueryResultOutputType::FORCE_MATERIALIZED;
 #endif
+        if (!bind->attach.read_only && bind->attach.write_enabled) {
+            properties.RegisterDBModify(*bind->attach.catalog, context,
+                                        DatabaseModificationType(DatabaseModificationType::INSERT_DATA |
+                                                                 DatabaseModificationType::UPDATE_DATA |
+                                                                 DatabaseModificationType::DELETE_DATA));
+        }
+    }
     CheckWritable(bind->attach, bind->alias);
     if (!explicit_batch) {
         Value v;

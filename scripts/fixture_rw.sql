@@ -81,6 +81,14 @@ CREATE TABLE CUSTOMER (
     CITY VARCHAR(30)
 );
 
+/* Column defaults: an INSERT that doesn't name a column gets Firebird's
+ * default, not NULL. */
+CREATE TABLE RW_DEFAULTS (
+    ID   INTEGER NOT NULL PRIMARY KEY,
+    NOTE VARCHAR(10) DEFAULT 'dflt',
+    QTY  INTEGER DEFAULT 7
+);
+
 CREATE TABLE RW_LOG (
     ID INTEGER NOT NULL,
     NOTE VARCHAR(20)
