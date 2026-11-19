@@ -133,8 +133,8 @@ Firebird 4, 5 and master:
 
 Both apply to the snapshot of a partitioned scan, `partition_by = 'dbkey'`
 included, and to the [transaction snapshot](#one-snapshot-per-duckdb-transaction-transaction_snapshot),
-where the joining window lasts for the whole DuckDB transaction. The
-extension is read-only, so data at rest is never at risk; only the
+where the joining window lasts for the whole DuckDB transaction. Scans
+only read, so data at rest is never at risk; only the
 consistency of what one scan or transaction reads is. This note will be
 updated when the fixes are released.
 
@@ -284,6 +284,14 @@ scaled numerics):
 ATTACH 'database=C:/data/erp.fdb user=APP_READONLY password=secret'
   AS fb (TYPE firebird, none_encoding 'win1252', none_pushdown true,
          numeric_widen_int64 true);
+```
+
+The ATTACH is read-only unless it is opened with DuckDB's `READ_WRITE`
+option, which allows writes through [`firebird_execute`](#firebird_executealias-sql):
+
+```sql
+ATTACH 'database=C:/data/erp.fdb user=APP_WRITER password=secret'
+  AS fb (TYPE firebird, READ_WRITE);
 ```
 
 Since v1.2.1, `none_encoding` and `none_pushdown` are also accepted inside
@@ -442,6 +450,9 @@ Both arguments may be any constant expression, for example
   - `EXECUTE STATEMENT ... ON EXTERNAL DATA SOURCE`, sharing the caller's
     transaction or `WITH AUTONOMOUS TRANSACTION` (tested against the same
     database).
+
+  It holds on an ATTACH opened with `READ_WRITE` too: `firebird_query`
+  runs on the read pool, never on a write connection.
 - **Where read-only stops.**
   - Sequences are not transactional: `GEN_ID(G, 1)` or `NEXT VALUE FOR G`
     in the `SELECT` advances `G`, and the step stays.
@@ -466,6 +477,100 @@ Both arguments may be any constant expression, for example
 - **Prepared twice.** The statement is prepared at bind (to learn its
   columns) and again when it runs. If its columns changed in between, the
   query fails and asks to be run again.
+
+### `firebird_execute(alias, sql)`
+
+Runs one Firebird statement (DML, DDL, `EXECUTE PROCEDURE`,
+`EXECUTE BLOCK`) on an ATTACH opened with `READ_WRITE`, inside the DuckDB
+transaction's Firebird write transaction.
+
+```sql
+ATTACH 'database=C:/data/erp.fdb;user=APP_WRITER;password=secret'
+  AS fb (TYPE firebird, READ_WRITE);
+
+SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID = 1');
+SELECT * FROM firebird_execute('fb', 'EXECUTE PROCEDURE SP_CLOSE_DAY(CURRENT_DATE)');
+```
+
+| Argument | Type | Description |
+|---|---|---|
+| `alias` | VARCHAR | Name of a `TYPE firebird` ATTACH opened with `READ_WRITE` |
+| `sql` | VARCHAR | One Firebird statement, as Firebird runs it |
+
+Returns one row:
+
+| Column | Type | Description |
+|---|---|---|
+| `rows_affected` | BIGINT | Rows inserted + updated + deleted, as Firebird reports them; 0 for DDL; `NULL` for a statement that returns rows |
+| `executions` | BIGINT | 1 |
+
+- **Opt-in.** Writing needs DuckDB's own `READ_WRITE` attach option.
+  Without it, and on a `READ_ONLY` ATTACH, the call fails at bind and names
+  the option. An ATTACH without `READ_WRITE` never opens a write
+  connection.
+- **Transactions follow DuckDB's.** Writes run on a second connection pool
+  of the ATTACH, never on the connections that serve reads, in a
+  read-write transaction: `read_committed`, `rec_version`, waiting up to
+  `firebird_write_lock_timeout` seconds for a row lock held elsewhere
+  (then "update conflicts with concurrent update"). In autocommit each call
+  is one Firebird transaction; between `BEGIN` and `COMMIT`, every write of
+  the DuckDB transaction is one Firebird transaction, committed or rolled
+  back with it. `SET TRANSACTION`, `COMMIT` and `ROLLBACK` in `sql` are
+  refused. As for any DuckDB transaction, one transaction writes to one
+  attached database. The write pool has the same settings as the read pool
+  (`firebird_pool_*`), so it can keep as many idle connections again;
+  `firebird_pool_stats()` reports the read pool only.
+- **Reads don't see uncommitted writes.** Scans and `firebird_query` keep
+  their read-only connections and transaction, so they see a write once it
+  is committed.
+- **Statements that return rows** (a `SELECT`, a selectable procedure, an
+  `EXECUTE BLOCK` with `SUSPEND`) run and their rows are read and
+  discarded, so a selectable procedure's writes happen, as in isql.
+  `rows_affected` is `NULL`. Use `firebird_query` to read rows.
+- **No parameters.** A statement with `?` placeholders is refused: write
+  the values into `sql`.
+- **Session statements are refused:** `SET ROLE`, `SET TRUSTED ROLE`,
+  `SET BIND`, `SET DECFLOAT`, `SET TIME ZONE`, `SET SESSION ...`,
+  `SET STATEMENT TIMEOUT`, `SET OPTIMIZE`, `ALTER SESSION`. The write
+  connection goes back to the ATTACH's pool, and later writes would
+  inherit the change.
+- **Passwords.** The query log and error messages show the literal after
+  `PASSWORD` (`CREATE USER ... PASSWORD '...'`, `EXECUTE STATEMENT ...
+  PASSWORD '...'`) as `'***'`.
+- **Two calls in one statement** (for example under `UNION ALL`) run one
+  after the other, on the DuckDB transaction's one write transaction.
+- **DDL.** `CREATE`, `ALTER` and `DROP` run like any statement. Once the
+  transaction commits, the ATTACH loads its tables again, so `fb.main`
+  shows the change without a new ATTACH; a prepared statement sees it too
+  (DuckDB binds it again on every execution). Before DDL, the ATTACH closes its
+  idle connections: an idle Firebird attachment keeps the tables it used
+  in its metadata cache, and Firebird refuses to drop or alter them while
+  it lives ("object ... is in use"). For DDL made outside this ATTACH, see
+  `firebird_clear_cache`.
+- **The write is kept when the client stops reading.** A client that reads
+  the one row with `fetchone()` and closes still keeps the write. On
+  DuckDB 1.5 the statement's result is materialized, as DuckDB does for
+  `INSERT`. On DuckDB 2.0, in autocommit, the call commits its Firebird
+  write before it returns the row; so if one DuckDB statement runs two
+  `firebird_execute` calls and the second fails, the first stays
+  committed. Inside `BEGIN ... COMMIT` both lines behave the same.
+- **Telemetry.** Each call leaves one `firebird_last_query()` /
+  `firebird_query_log()` record: the statement in `remote_sql`,
+  `operation = 'execute'`, `write_mode = 'row'`, `rows_written` (1) and
+  `rows_affected`; on failure, the error.
+
+### `firebird_clear_cache(alias)`
+
+Forgets the tables an ATTACH has loaded, so the next query loads the table
+list and columns again, and closes the ATTACH's idle connections. Use it
+after DDL made outside this ATTACH; DDL through `firebird_execute` does it
+when its transaction commits.
+
+```sql
+SELECT * FROM firebird_clear_cache('fb');
+```
+
+Returns one row, `cleared BOOLEAN` (`true`).
 
 ### `firebird_attach_sql(connection_string [, schema])`
 
@@ -930,8 +1035,13 @@ Useful fields include:
   snapshot (`snapshot_mode`) and how the table was split
   (`partition_method`)
 - connection reuse details
+- what the record is (`operation`: `scan`, `query` for `firebird_query`,
+  `execute` for `firebird_execute`) and, for writes, `write_mode` (`row`),
+  `rows_written` (executions) and `rows_affected` (Firebird's record
+  counts; `NULL` when not counted). The three write columns are `NULL` for
+  reads.
 
-The schema is 21 columns (shared with `firebird_query_log()`). The
+The schema is 25 columns (shared with `firebird_query_log()`). The
 pushdown-explainability columns (`limit_pushed`, `offset_pushed`,
 `not_pushed_reasons`) make it explicit what reached Firebird and why a
 filter stayed local, and `bytes_read_estimate` (added last, G5) supports
@@ -1095,7 +1205,7 @@ FROM firebird_explain_pushdown(
 
 Returns the in-memory query log for the current DuckDB session.
 
-Each row carries the same 21-column telemetry schema as
+Each row carries the same 25-column telemetry schema as
 `firebird_last_query()` — including `bytes_read_estimate`, so a rotated
 log keeps the per-query transfer estimates of the session.
 
@@ -1363,6 +1473,13 @@ releases a DuckDB transaction's snapshot when this many seconds pass from
 the end of a statement to the next scan of the ATTACH in the transaction;
 that scan then fails. See
 [One snapshot per DuckDB transaction](#one-snapshot-per-duckdb-transaction-transaction_snapshot).
+
+### `SET firebird_write_lock_timeout = SECONDS`
+
+How long a Firebird write (`firebird_execute`) waits for a row lock held by
+another transaction before it fails with "update conflicts with concurrent
+update". Default 10; `0` fails at once (no wait); at most 32767. Read when
+the write transaction starts.
 
 ### `SET firebird_dummy_packet_interval = SECONDS`
 
