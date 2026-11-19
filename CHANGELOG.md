@@ -41,6 +41,15 @@
   names are sent, so Firebird applies its own defaults, triggers and
   generators to the rest (on DuckDB 1.5 and 2.0). `RETURNING`,
   `DEFAULT VALUES` and `ON CONFLICT` are refused.
+- Batched writes on Firebird 4+ servers: `SET firebird_write_batch_size =
+  N` (or `batch_size := N` on `firebird_execute`) sends `firebird_execute`
+  source rows and `INSERT INTO fb.main.T` rows N at a time through
+  Firebird's `IBatch` interface instead of one round trip each. Firebird
+  5+ batches any statement that returns no rows, Firebird 4 plain
+  INSERT/UPDATE/DELETE; the rest, Firebird 3 and statements with BLOB
+  parameters run one row at a time. A batch is also cut before it could
+  overflow its 16 MB buffer. The Firebird 5.0.3 OO API headers are
+  vendored for it (IDPL).
 - `firebird_last_query()` / `firebird_query_log()` gain four columns (25
   in all): `operation` (`scan`, `query`, `execute`, `insert`), and for writes
   `write_mode`, `rows_written` and `rows_affected`.

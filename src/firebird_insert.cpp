@@ -18,6 +18,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
 
+#include "firebird_batch.hpp"
 #include "firebird_client.hpp"
 #include "firebird_observability.hpp"
 #include "firebird_param_encoder.hpp"
@@ -41,7 +42,12 @@ const std::string &Str(const std::string &name) {
 struct FirebirdInsertGlobalState : public GlobalSinkState {
     std::unique_ptr<FirebirdStatement> stmt;
     std::unique_ptr<FirebirdParamEncoder> encoder;
-    int64_t rows = 0;  // rows inserted (executed)
+    std::unique_ptr<FirebirdBatchWriter> batch;  // Firebird 4+, when batch_size > 0
+    int64_t batch_size = 0;
+    int64_t rows = 0;   // rows inserted (executed)
+    int64_t added = 0;  // rows encoded
+    // Record counts the batches returned (batch mode only; -1 = not counted).
+    int64_t affected = -1;
 };
 
 struct FirebirdInsertSourceState : public GlobalSourceState {
@@ -80,10 +86,26 @@ public:
         auto &conn = GetFirebirdWriteConnection(context, catalog_, lock_timeout_s);
         RecordFirebirdWrite(context, sql_, "insert", table_name_, conn.Id());
         state->stmt = make_uniq<FirebirdStatement>(conn, sql_, FirebirdStatement::PrepareOnlyTag {});
-        state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_);
-        // Record counts would cost one round trip per row: rows_affected
-        // stays NULL.
-        GetObservabilityState(context)->SetWriteResult("row", 0, -1);
+        Value b;
+        if (context.TryGetCurrentSetting("firebird_write_batch_size", b) && !b.IsNull()) {
+            state->batch_size = b.GetValue<int64_t>();
+        }
+        if (state->batch_size > 0) {
+            state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_, true);
+            std::string why;
+            state->batch = FirebirdBatchWriter::TryCreate(conn, *state->stmt, *state->encoder,
+                                                          isc_info_sql_stmt_insert, true, &why);
+            if (!state->batch) {
+                state->encoder.reset();
+            }
+        }
+        if (state->batch) {
+            state->affected = 0;  // a batch returns record counts at no extra cost
+        }
+        if (!state->encoder) {
+            state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_);
+        }
+        GetObservabilityState(context)->SetWriteResult(state->batch ? "batch" : "row", 0, -1);
         return std::move(state);
     }
 
@@ -93,20 +115,32 @@ public:
         for (idx_t r = 0; r < chunk.size(); ++r) {
             try {
                 state.encoder->Encode(chunk, r, input_columns_);
-                state.stmt->ExecuteWithInput(sql_);
+                if (state.batch) {
+                    state.batch->Add();
+                } else {
+                    state.stmt->ExecuteWithInput(sql_);
+                }
             } catch (std::exception &ex) {
-                Fail(state, *obs, state.rows + 1, ErrorData(ex).RawMessage());
+                Fail(state, *obs, state.added + 1, ErrorData(ex).RawMessage());
             }
-            ++state.rows;
+            ++state.added;
+            if (!state.batch) {
+                ++state.rows;
+            } else if (static_cast<int64_t>(state.batch->Pending()) >= state.batch_size ||
+                       state.batch->Full()) {
+                Flush(state, *obs);
+            }
         }
-        obs->SetWriteResult("row", state.rows, -1);
+        obs->SetWriteResult(state.batch ? "batch" : "row", state.rows, state.affected);
         return SinkResultType::NEED_MORE_INPUT;
     }
 
     SinkFinalizeType Finalize(Pipeline &, Event &, ClientContext &context,
                               OperatorSinkFinalizeInput &input) const override {
         auto &state = input.global_state.Cast<FirebirdInsertGlobalState>();
-        GetObservabilityState(context)->SetWriteResult("row", state.rows, -1);
+        auto obs = GetObservabilityState(context);
+        Flush(state, *obs);
+        obs->SetWriteResult(state.batch ? "batch" : "row", state.rows, state.affected);
         return SinkFinalizeType::READY;
     }
 
@@ -114,9 +148,25 @@ public:
                            const std::string &error) const {
         const std::string msg = "INSERT into Firebird table \"" + table_name_ + "\": row " +
                                 std::to_string(row) + " failed: " + error;
-        obs.SetWriteResult("row", state.rows, -1);
+        obs.SetWriteResult(state.batch ? "batch" : "row", state.rows, state.affected);
         obs.SetError(msg);
         throw InvalidInputException(msg);
+    }
+
+    // Sends the pending batch (no-op in the per-row mode).
+    void Flush(FirebirdInsertGlobalState &state, FirebirdObservabilityState &obs) const {
+        if (!state.batch || state.batch->Pending() == 0) {
+            return;
+        }
+        const int64_t first = state.rows;
+        auto res = state.batch->Execute();
+        state.rows += static_cast<int64_t>(res.executed);
+        if (state.affected >= 0) {
+            state.affected = res.affected < 0 ? -1 : state.affected + res.affected;
+        }
+        if (res.failed) {
+            Fail(state, obs, first + static_cast<int64_t>(res.failed_index) + 1, res.error);
+        }
     }
 
     bool IsSink() const override {

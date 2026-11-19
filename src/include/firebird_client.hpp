@@ -90,6 +90,9 @@ void ValidateMaxInlineBlobSize(int64_t bytes);
 // returns "" when the library doesn't export isc_get_client_version.
 std::string FirebirdClientVersion();
 
+// isc_interprete'd text of an error status vector.
+std::string FirebirdStatusText(const ISC_STATUS *status);
+
 // Removes credentials from a message that may echo a connection string:
 // 'password=...' values, 'scheme://user:pass@' user info, and every
 // literal occurrence of `password`.
@@ -239,6 +242,7 @@ public:
     // Executes with the current input values; opens no cursor.
     void ExecuteWithInput(const std::string &sql_for_error);
     FirebirdConnection &Connection() { return conn_; }
+    isc_stmt_handle &Handle() { return stmt_; }
 
     // Returns false when no more rows are available.
     bool Fetch();
@@ -497,6 +501,10 @@ public:
     void RollbackWrite();
     bool InWriteTransaction() const { return in_write_; }
 
+    // Major version of the server's engine (RDB$GET_CONTEXT ENGINE_VERSION),
+    // read once; 0 when it can't be read.
+    int EngineMajor();
+
     // Creates a BLOB holding `bytes` in the current transaction and returns
     // its id, to pass as a parameter value. `subtype` and `charset` are the
     // target's (charset only matters for a text BLOB, subtype 1).
@@ -536,6 +544,7 @@ private:
     int64_t id_ = 0;
     bool in_snapshot_ = false;
     bool in_write_ = false;
+    int engine_major_ = -1;
     std::atomic<bool> broken_{false};
 
     void Attach();

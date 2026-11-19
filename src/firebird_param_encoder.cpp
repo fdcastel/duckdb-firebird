@@ -47,8 +47,8 @@ void Put(std::vector<char> &buffer, const T &value, size_t offset = 0) {
 } // namespace
 
 FirebirdParamEncoder::FirebirdParamEncoder(FirebirdStatement &stmt, const vector<LogicalType> &source_types,
-                                           NoneEncoding none_encoding)
-    : stmt_(stmt), none_encoding_(none_encoding) {
+                                           NoneEncoding none_encoding, bool fixed_layout)
+    : stmt_(stmt), none_encoding_(none_encoding), fixed_layout_(fixed_layout) {
     const auto &params = stmt_.DescribeInput();
     if (params.size() != source_types.size()) {
         throw InvalidInputException("the statement has %llu parameter(s) (?) but %llu value(s) were given",
@@ -139,6 +139,15 @@ void FirebirdParamEncoder::Setup(Slot &slot) {
             slot.wire = Wire::TEXT;
             break;
         }
+    }
+
+    if (fixed_layout_ && slot.wire == Wire::WIDE) {
+        // One layout for every row (batches, Firebird 4+): INT128 holds any
+        // value WIDE would send, with the DECIMAL's own scale.
+        slot.wire = Wire::INT128;
+        slot.sqlscale = src.id() == LogicalTypeId::DECIMAL
+                            ? static_cast<int16_t>(-DecimalType::GetScale(src))
+                            : static_cast<int16_t>(0);
     }
 
     switch (slot.wire) {
@@ -416,6 +425,15 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
     }
 }
 
+vector<FirebirdParamEncoder::Layout> FirebirdParamEncoder::GetLayout() const {
+    vector<Layout> out;
+    out.reserve(slots_.size());
+    for (auto &slot : slots_) {
+        out.push_back(Layout {slot.sqltype, slot.sqllen, slot.sqlscale, slot.sqlsubtype, slot.wire == Wire::BLOB});
+    }
+    return out;
+}
+
 void FirebirdParamEncoder::Encode(const vector<Value> &values) {
     if (values.size() != slots_.size()) {
         throw InvalidInputException("expected %llu parameter value(s), got %llu",
@@ -427,15 +445,15 @@ void FirebirdParamEncoder::Encode(const vector<Value> &values) {
     }
 }
 
-void FirebirdParamEncoder::Encode(DataChunk &chunk, idx_t row) {
-    for (idx_t i = 0; i < slots_.size(); ++i) {
-        EncodeValue(i, slots_[i], chunk.GetValue(i, row));
-    }
-}
-
 void FirebirdParamEncoder::Encode(DataChunk &chunk, idx_t row, const vector<idx_t> &columns) {
     for (idx_t i = 0; i < slots_.size(); ++i) {
         EncodeValue(i, slots_[i], chunk.GetValue(columns[i], row));
+    }
+}
+
+void FirebirdParamEncoder::Encode(DataChunk &chunk, idx_t row) {
+    for (idx_t i = 0; i < slots_.size(); ++i) {
+        EncodeValue(i, slots_[i], chunk.GetValue(i, row));
     }
 }
 
