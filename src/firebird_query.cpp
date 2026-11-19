@@ -41,7 +41,7 @@ static inline bool IsDecfloatType(int16_t sqltype) {
 
 // Whether the value's LogicalType can be safely bound as an input
 // parameter to a Firebird prepared statement (matches the encoding
-// branches in FirebirdStatement::BindInputParameters). NULL is fine
+// branches of FirebirdParamEncoder). NULL is fine
 // here too — the indicator slot carries the NULL flag and the
 // XSQLVAR's described sqltype tells the encoder which buffer shape
 // to use, so even a NULL VARCHAR / DATE / etc. binds correctly.

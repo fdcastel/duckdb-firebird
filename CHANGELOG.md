@@ -26,9 +26,24 @@
   2.0. DDL through `firebird_execute` makes the ATTACH load its tables
   again once it commits; `firebird_clear_cache(alias)` does it for DDL
   made elsewhere.
+- `firebird_execute(alias, sql, source := '<duckdb query>' [, commit_every
+  := N, count_rows := bool])` runs the statement once per row of a DuckDB
+  query, with the row's columns as its `?` parameters. Each value travels
+  in a Firebird type that represents it exactly (a `DECIMAL` as a scaled
+  integer with its own scale; BLOBs of any size; Firebird 4+ `INT128`,
+  `DECFLOAT` and time zones), the server converts it with its own rules,
+  and every row sets every parameter again, so a value after a NULL is
+  never sent as NULL. `commit_every` commits every N rows; an error names
+  the failing source row and what was kept.
 - `firebird_last_query()` / `firebird_query_log()` gain four columns (25
   in all): `operation` (`scan`, `query`, `execute`), and for writes
   `write_mode`, `rows_written` and `rows_affected`.
+
+### Changed
+
+- The values of pushed-down filters are bound through the same parameter
+  encoder as `firebird_execute`. No visible change: a scan binds only
+  booleans, integers, floats, text, dates and times.
 
 ### Fixed
 

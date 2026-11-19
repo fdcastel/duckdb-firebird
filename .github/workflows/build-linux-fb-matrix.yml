@@ -180,11 +180,16 @@ jobs:
           fi
 
           # Write-path fixture: its own database, so the writes never touch
-          # the other fixtures.
+          # the other fixtures. The FB4+ types load into the same database
+          # on FB4/FB5.
           docker cp scripts/fixture_rw.sql fb:/tmp/fixture_rw.sql
           printf "%s\n" "CREATE DATABASE '/var/lib/firebird/data/rw.fdb' DEFAULT CHARACTER SET UTF8;" \
             | docker exec -i fb bash -c "isql -u SYSDBA -p masterkey"
           docker exec fb isql -u SYSDBA -p masterkey -i /tmp/fixture_rw.sql /var/lib/firebird/data/rw.fdb
+          if [ "${{ matrix.fb_major }}" != "3" ]; then
+            docker cp scripts/fixture_rw4.sql fb:/tmp/fixture_rw4.sql
+            docker exec fb isql -u SYSDBA -p masterkey -i /tmp/fixture_rw4.sql /var/lib/firebird/data/rw.fdb
+          fi
 
           # DataTypeCompatibility fixture (FB4+): its own database, opened
           # through a databases.conf alias with DataTypeCompatibility = 2.5,
@@ -238,6 +243,7 @@ jobs:
             # An alias needs the key=value form (the URL form keeps a leading '/').
             echo "FIREBIRD_TYPE_COMPAT_DB=user=SYSDBA;password=masterkey;database=localhost/3050:compat25;charset=UTF8" >> $GITHUB_ENV
             echo "FIREBIRD_QUERY4_DB=firebird://SYSDBA:masterkey@localhost:3050/var/lib/firebird/data/query.fdb?charset=UTF8" >> $GITHUB_ENV
+            echo "FIREBIRD_RW4_DB=firebird://SYSDBA:masterkey@localhost:3050/var/lib/firebird/data/rw.fdb?charset=UTF8" >> $GITHUB_ENV
           fi
 
       - name: Extract matching libfbclient from the fb${{ matrix.fb_major }} container
@@ -427,9 +433,11 @@ jobs:
           # firebird_query (FB4+ types through FIREBIRD_QUERY4_DB, FB4/FB5).
           ./build/release/test/unittest test/sql/firebird_query.test
           ./build/release/test/unittest test/sql/firebird_query_fb4.test
-          # Writes (READ_WRITE ATTACH).
+          # Writes (READ_WRITE ATTACH; FB4+ types through FIREBIRD_RW4_DB).
           ./build/release/test/unittest test/sql/firebird_execute.test
           ./build/release/test/unittest test/sql/firebird_ddl_cache.test
+          ./build/release/test/unittest test/sql/firebird_execute_source.test
+          ./build/release/test/unittest test/sql/firebird_execute_source_fb4.test
 
       - name: Writes commit when a client reads one row and closes (Python)
         # sqllogictest reads every result fully; this needs a real client
