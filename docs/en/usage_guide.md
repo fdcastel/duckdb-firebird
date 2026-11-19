@@ -31,7 +31,8 @@ This guide follows concepts documented by DuckDB:
   and JSON.
 - [`ATTACH`](https://duckdb.org/docs/current/sql/statements/attach.html):
   attaches another catalog to DuckDB. This extension uses the same
-  model to expose Firebird as a read-only catalog.
+  model to expose Firebird as a catalog, read-only unless it is
+  attached with `READ_WRITE`.
 - [`Indexes`](https://duckdb.org/docs/current/sql/indexes.html) and
   [index performance](https://duckdb.org/docs/current/guides/performance/indexing.html):
   DuckDB builds zonemaps automatically; ART indexes help with very
@@ -113,8 +114,10 @@ FROM fb.main.TABPESSOAS
 LIMIT 10;
 ```
 
-The Firebird catalog is read-only in this extension. Create analytical
-tables in the local DuckDB catalog.
+The Firebird catalog is read-only unless the ATTACH uses DuckDB's
+`READ_WRITE` option, which allows writes through `firebird_execute` (see
+the function manual). Create analytical tables in the local DuckDB
+catalog.
 
 ## 2. Installation and loading
 

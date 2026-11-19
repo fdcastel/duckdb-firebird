@@ -13,6 +13,28 @@
   in the SELECT still advances its sequence. It leaves a
   `firebird_last_query()` / `firebird_query_log()` record, and appears in
   `firebird_explain_pushdown()` as `scan_strategy = 'passthrough'`.
+- Writes, opt-in: `ATTACH ... (TYPE firebird, READ_WRITE)` and
+  `firebird_execute(alias, sql)`, which runs one Firebird statement (DML,
+  DDL, `EXECUTE PROCEDURE`, `EXECUTE BLOCK`) and returns `rows_affected`
+  and `executions`. Writes run on a second connection pool of the ATTACH,
+  in a read-committed write transaction that follows the DuckDB
+  transaction (one per statement in autocommit, one per `BEGIN ...
+  COMMIT`) and waits `SET firebird_write_lock_timeout` seconds (default
+  10) for a row lock. Reads keep their read-only connections. Without
+  `READ_WRITE` an ATTACH never opens a write connection. A client that
+  reads the result's one row and closes keeps the write, on DuckDB 1.5 and
+  2.0. DDL through `firebird_execute` makes the ATTACH load its tables
+  again once it commits; `firebird_clear_cache(alias)` does it for DDL
+  made elsewhere.
+- `firebird_last_query()` / `firebird_query_log()` gain four columns (25
+  in all): `operation` (`scan`, `query`, `execute`), and for writes
+  `write_mode`, `rows_written` and `rows_affected`.
+- On Firebird 4+, a pooled connection that ran a write transaction or a
+  `firebird_query` gets `ALTER SESSION RESET` before it goes back to the
+  pool, so context variables, a role, a time zone or temporary-table rows
+  set by the caller's SQL don't reach later queries. It fires the
+  database's `ON DISCONNECT` / `ON CONNECT` triggers (`RESETTING` true);
+  `SET firebird_pool_session_reset = false` turns it off.
 
 ### Changed
 

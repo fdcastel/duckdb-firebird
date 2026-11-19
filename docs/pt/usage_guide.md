@@ -33,7 +33,8 @@ Este guia segue os conceitos documentados pelo DuckDB:
   importa/exporta dados entre DuckDB e arquivos como CSV, Parquet e JSON.
 - [`ATTACH`](https://duckdb.org/docs/current/sql/statements/attach.html):
   anexa outro catalogo ao DuckDB. Esta extensao usa o mesmo modelo para
-  expor Firebird como catalogo read-only.
+  expor Firebird como catalogo, read-only a menos que o ATTACH use
+  `READ_WRITE`.
 - [`Indexes`](https://duckdb.org/docs/current/sql/indexes.html) e
   [performance de indexes](https://duckdb.org/docs/current/guides/performance/indexing.html):
   DuckDB cria zonemaps automaticamente; indices ART ajudam em filtros
@@ -116,8 +117,9 @@ FROM fb.main.TABPESSOAS
 LIMIT 10;
 ```
 
-O catalogo Firebird e read-only nesta extensao. Crie tabelas analiticas
-no catalogo DuckDB local.
+O catalogo Firebird e read-only, a menos que o ATTACH use a opcao
+`READ_WRITE` do DuckDB, que permite escritas via `firebird_execute` (veja o
+manual de funcoes). Crie tabelas analiticas no catalogo DuckDB local.
 
 ## 2. Instalacao e carregamento
 

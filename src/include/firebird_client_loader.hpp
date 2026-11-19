@@ -25,6 +25,7 @@ struct FirebirdClientApi {
     decltype(&::isc_dsql_describe)           isc_dsql_describe;
     decltype(&::isc_dsql_describe_bind)      isc_dsql_describe_bind;
     decltype(&::isc_dsql_execute)            isc_dsql_execute;
+    decltype(&::isc_dsql_execute_immediate) isc_dsql_execute_immediate;
     decltype(&::isc_dsql_fetch)              isc_dsql_fetch;
     decltype(&::isc_dsql_free_statement)     isc_dsql_free_statement;
     decltype(&::isc_open_blob2)              isc_open_blob2;
@@ -36,6 +37,8 @@ struct FirebirdClientApi {
     decltype(&::isc_get_client_version)      isc_get_client_version;
     // Statement type of a prepared statement (firebird_query).
     decltype(&::isc_dsql_sql_info)           isc_dsql_sql_info;
+    // Commits a write transaction (firebird_execute).
+    decltype(&::isc_commit_transaction)      isc_commit_transaction;
 };
 
 // Resolve the Firebird client library (once per process) and return
