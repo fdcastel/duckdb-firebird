@@ -368,6 +368,12 @@ public:
     // Pool size hint (mostly for testing / introspection).
     size_t IdleCount();
 
+    // Close every idle connection (counted as discarded). An idle
+    // attachment keeps the tables it used in its metadata cache, which
+    // makes Firebird refuse DROP / ALTER of those tables ("object ... is in
+    // use"); connections in use are left alone.
+    void DiscardIdle();
+
     // Lifetime counters. Useful for tests and for the future
     // pool-introspection surface. Process-relative; no decay.
     int64_t TotalCreated()   const { return total_created_.load(std::memory_order_relaxed); }

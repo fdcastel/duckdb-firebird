@@ -146,10 +146,8 @@ SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID
   the row was missing. On DuckDB v2.0 (built, not tested) the statement
   properties have no output type, so this is not applied; read results
   fully there.
-- **DDL:** allowed and committed with the transaction. The ATTACH's
-  catalog is not refreshed: a table created this way does not appear
-  under `fb.main` until the database is attached again (`firebird_query`
-  can read it at once).
+- **DDL:** allowed and committed with the transaction. See "DDL and the
+  ATTACH's tables" below for how `fb.main` follows it.
 - **CREATE DATABASE:** a statement starting with `CREATE DATABASE` runs
   through `isc_dsql_execute_immediate` without an attachment (as isql
   does) and creates the database it names, with the user and password it
@@ -463,3 +461,42 @@ Tests: `test/sql/firebird_execute_batch.test` (Firebird 3/4/5, with
 `write_mode` is checked against the server version on every case.
 Negative control (Firebird 5, local build): a message that keeps the
 previous row's NULL flags fails the round trip.
+
+## DDL and the ATTACH's tables
+
+An ATTACH loads its table list (and each table's columns) once, on first
+use. Two ways now refresh it:
+- **Our own DDL, automatically.** When `firebird_execute` runs a DDL
+  statement (`isc_info_sql_stmt_ddl`), the ATTACH forgets its tables once
+  the DuckDB transaction commits, so the next query reloads them. A table
+  created, altered or dropped this way shows up (or disappears) under
+  `fb.main` in the next statement, without re-attaching. Before the commit
+  the read connections can't see the DDL yet, so there is nothing to
+  reload; after a ROLLBACK nothing changes.
+- **Anyone else's DDL, by hand.** `firebird_clear_cache(alias)` makes the
+  ATTACH forget its tables, and closes its idle pooled connections.
+
+Dropping or altering a table that another attachment has used fails in
+Firebird with "object ... is in use", because each attachment keeps the
+tables it used in its metadata cache. Idle pooled connections count. So
+before a DDL statement, `firebird_execute` closes the idle connections of
+its own ATTACH (read and write pools), and `firebird_clear_cache` closes
+those of another. Connections busy in a running query, and other
+programs' attachments, still block it, as they do in Firebird.
+
+Old table entries are kept (not freed) until the ATTACH is detached,
+because a query that is running may still hold them. A query that started
+before the refresh goes on with the columns it was planned with.
+
+Test: `test/sql/firebird_ddl_cache.test` (Firebird 3/4/5). It covers:
+- CREATE TABLE, then INSERT INTO and SELECT through `fb.main` at once;
+- ALTER TABLE ADD, with the new column visible;
+- CREATE inside `BEGIN ... COMMIT` (visible after) and inside
+  `BEGIN ... ROLLBACK` (never there);
+- a second ATTACH of the same database that sees the table only after
+  `firebird_clear_cache`;
+- DROP TABLE, after which the table is gone;
+- `firebird_clear_cache` on an unknown alias.
+
+On the code before this change, the same test fails at the first INSERT
+with "Table with name RW_DDL_A does not exist!".

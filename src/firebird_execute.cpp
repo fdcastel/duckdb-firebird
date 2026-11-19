@@ -246,6 +246,12 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
         FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
         const bool returns_rows = CheckStatementType(stmt, true);
+        const bool is_ddl = stmt.StatementType() == isc_info_sql_stmt_ddl;
+        if (is_ddl) {
+            // Idle connections of this ATTACH would hold the tables they
+            // used ("object ... is in use" on DROP / ALTER).
+            ReleaseFirebirdIdleConnections(*bind.attach.catalog);
+        }
         const auto params = stmt.DescribeInput().size();
         if (params > 0) {
             throw InvalidInputException("%s: the statement has %llu parameter(s) (?); pass their values with "
@@ -261,6 +267,10 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
             stmt.ExecuteNoCursor(bind.sql);
             if (bind.count_rows) {
                 rows_affected = stmt.RecordsAffected();
+            }
+            if (is_ddl) {
+                // The ATTACH reloads its tables once this commits.
+                NoteFirebirdDdl(context, *bind.attach.catalog);
             }
         }
         executions = 1;
@@ -375,7 +385,64 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     output.data[1].SetValue(0, Value::BIGINT(executions));
 }
 
+// --- firebird_clear_cache(alias) ----------------------------------------------
+
+struct FirebirdClearCacheBindData : public TableFunctionData {
+    FirebirdAttachHandle attach;
+};
+
+struct FirebirdClearCacheState : public GlobalTableFunctionState {
+    bool done = false;
+};
+
+unique_ptr<FunctionData> FirebirdClearCacheBind(ClientContext &context, TableFunctionBindInput &input,
+                                                vector<LogicalType> &return_types,
+#ifdef FIREBIRD_DUCKDB_V2
+                                                vector<Identifier> &names) {
+#else
+                                                vector<string> &names) {
+#endif
+    if (input.inputs.size() != 1 || input.inputs[0].IsNull()) {
+        throw BinderException("firebird_clear_cache(alias) requires a non-NULL alias");
+    }
+    auto bind = make_uniq<FirebirdClearCacheBindData>();
+    bind->attach = GetFirebirdAttachHandle(context, input.inputs[0].ToString(), "firebird_clear_cache");
+    return_types = {LogicalType::BOOLEAN};
+#ifdef FIREBIRD_DUCKDB_V2
+    names = {Identifier("cleared")};
+#else
+    names = {"cleared"};
+#endif
+    return std::move(bind);
+}
+
+unique_ptr<GlobalTableFunctionState> FirebirdClearCacheInit(ClientContext &, TableFunctionInitInput &) {
+    return make_uniq<FirebirdClearCacheState>();
+}
+
+void FirebirdClearCacheFunction(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+    auto &state = data.global_state->Cast<FirebirdClearCacheState>();
+    if (state.done) {
+        output.SetCardinality(0);
+        return;
+    }
+    state.done = true;
+    ClearFirebirdCatalogCache(*data.bind_data->Cast<FirebirdClearCacheBindData>().attach.catalog);
+    output.SetCardinality(1);
+    output.data[0].SetValue(0, Value::BOOLEAN(true));
+}
+
 } // namespace
+
+TableFunction GetFirebirdClearCacheFunction() {
+    return TableFunction("firebird_clear_cache",
+#ifdef FIREBIRD_DUCKDB_V2
+                         FunctionSignature().AddPositionalOnly("alias", LogicalType::VARCHAR),
+#else
+                         {LogicalType::VARCHAR},
+#endif
+                         FirebirdClearCacheFunction, FirebirdClearCacheBind, FirebirdClearCacheInit);
+}
 
 TableFunction GetFirebirdExecuteFunction() {
 #ifdef FIREBIRD_DUCKDB_V2

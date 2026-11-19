@@ -410,6 +410,16 @@ static void DpbAppend(std::vector<char> &dpb, char tag, const std::string &val) 
 
 // --- FirebirdConnectionPool --------------------------------------------------
 
+void FirebirdConnectionPool::DiscardIdle() {
+    std::vector<IdleEntry> drop;
+    {
+        std::lock_guard<std::mutex> g(lock_);
+        drop.swap(idle_);
+    }
+    total_discarded_.fetch_add(static_cast<int64_t>(drop.size()), std::memory_order_relaxed);
+    drop.clear();  // detaches outside the lock
+}
+
 std::unique_ptr<FirebirdConnection> FirebirdConnectionPool::Acquire() {
     return AcquireWithInfo().conn;
 }

@@ -423,6 +423,7 @@ jobs:
             ./build/release/test/unittest test/sql/firebird_execute_source_fb4.test
             ./build/release/test/unittest test/sql/firebird_insert.test
             ./build/release/test/unittest test/sql/firebird_execute_batch.test
+            ./build/release/test/unittest test/sql/firebird_ddl_cache.test
           fi
 
       - name: Writes commit when a client reads one row and closes (Python)

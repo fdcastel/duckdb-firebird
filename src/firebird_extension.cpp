@@ -79,6 +79,12 @@ static void LoadInternal(ExtensionLoader &loader) {
         "SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID = 1');",
         {"firebird", "write"}));
     loader.RegisterFunction(DescribedTableFunction(
+        GetFirebirdClearCacheFunction(), {"alias"},
+        "Forgets the tables an ATTACH has cached, so the next query loads the table list and columns "
+        "again (after DDL made outside this ATTACH; DDL through firebird_execute does it on commit).",
+        "SELECT * FROM firebird_clear_cache('fb');",
+        {"firebird", "catalog"}));
+    loader.RegisterFunction(DescribedTableFunction(
         GetFirebirdTablesFunction(), {"connection_string"},
         "Lists the Firebird tables visible to a connection, without attaching the database.",
         "SELECT * FROM firebird_tables('database=C:/data/erp.fdb user=APP_READONLY password=secret');",

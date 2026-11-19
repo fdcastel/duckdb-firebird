@@ -28,6 +28,22 @@ struct FirebirdAttachHandle {
 FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &catalog,
                                                int64_t lock_timeout_s);
 
+// firebird_execute ran a DDL statement in the current DuckDB transaction:
+// the ATTACH's table cache is cleared when that transaction commits.
+void NoteFirebirdDdl(ClientContext &context, Catalog &catalog);
+
+// Forget an ATTACH's cached tables (the next use loads them again) and
+// close its idle connections.
+void ClearFirebirdCatalogCache(Catalog &catalog);
+
+// Close an ATTACH's idle pooled connections (read and write pools): they
+// keep the tables they used in their metadata cache, so Firebird refuses
+// DROP / ALTER of those tables while they live.
+void ReleaseFirebirdIdleConnections(Catalog &catalog);
+
+// firebird_clear_cache(alias)
+TableFunction GetFirebirdClearCacheFunction();
+
 // firebird_execute(alias, sql): runs one statement that returns no rows in
 // the DuckDB transaction's Firebird write transaction (ATTACH ... READ_WRITE).
 TableFunction GetFirebirdExecuteFunction();

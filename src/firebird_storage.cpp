@@ -242,18 +242,16 @@ public:
     void Scan(ClientContext & /*ctx*/, CatalogType type,
               const std::function<void(CatalogEntry &)> &callback) override {
         if (type != CatalogType::TABLE_ENTRY) return;
-        EnsureTablesLoaded();
-        for (auto &kv : tables_) {
-            callback(*kv.second);
+        for (auto *entry : TableSnapshot()) {
+            callback(*entry);
         }
     }
 
     void Scan(CatalogType type,
               const std::function<void(CatalogEntry &)> &callback) override {
         if (type != CatalogType::TABLE_ENTRY) return;
-        EnsureTablesLoaded();
-        for (auto &kv : tables_) {
-            callback(*kv.second);
+        for (auto *entry : TableSnapshot()) {
+            callback(*entry);
         }
     }
 
@@ -265,9 +263,35 @@ public:
         }
         EnsureTablesLoaded();
         auto key = ToUpper(lookup_info.GetEntryName());
+        std::lock_guard<std::mutex> g(load_lock_);
         auto it = tables_.find(key);
         if (it == tables_.end()) return nullptr;
         return it->second.get();
+    }
+
+    // Forget the cached tables: the next lookup loads them again. The old
+    // entries stay alive (retired_) because a running query may still hold
+    // them.
+    void ClearCache() {
+        std::lock_guard<std::mutex> g(load_lock_);
+        for (auto &kv : tables_) {
+            retired_.push_back(std::move(kv.second));
+        }
+        tables_.clear();
+        loaded_ = false;
+    }
+
+    // The loaded tables, copied under the lock (entries are never freed
+    // while the catalog lives).
+    std::vector<FirebirdTableEntry *> TableSnapshot() {
+        EnsureTablesLoaded();
+        std::lock_guard<std::mutex> g(load_lock_);
+        std::vector<FirebirdTableEntry *> out;
+        out.reserve(tables_.size());
+        for (auto &kv : tables_) {
+            out.push_back(kv.second.get());
+        }
+        return out;
     }
 
     // -- mutating ops — all throw, this is a read-only catalog ---------------
@@ -694,6 +718,7 @@ private:
     std::mutex load_lock_;
     bool loaded_ = false;
     std::unordered_map<std::string, std::unique_ptr<FirebirdTableEntry>> tables_;
+    std::vector<std::unique_ptr<FirebirdTableEntry>> retired_;
 };
 
 // ---------------------------------------------------------------------------
@@ -781,6 +806,13 @@ public:
     }
 
     bool InMemory() override { return false; }
+
+    // Reload the table list (and every table's columns) on next use.
+    void ClearCache() {
+        if (main_schema_) {
+            main_schema_->ClearCache();
+        }
+    }
 
     string GetDBPath() override {
         return RedactConnectionSecrets(conn_info_.database, conn_info_.password);
@@ -908,7 +940,7 @@ public:
     FirebirdTransaction(TransactionManager &manager, ClientContext &context,
                         FirebirdCatalog &catalog)
         : Transaction(manager, context), pool_(catalog.Pool()), write_pool_(catalog.WritePool()),
-          catalog_name_(catalog.GetName()),
+          catalog_(&catalog), catalog_name_(catalog.GetName()),
           no_snapshot_numbers_(catalog.no_snapshot_numbers) {}
 
     ~FirebirdTransaction() override {
@@ -967,7 +999,21 @@ public:
             throw;
         }
         write_pool_->Release(std::move(conn));
+        // Committed DDL: the next lookup reloads the table list, so a table
+        // created or altered through firebird_execute shows up under
+        // fb.main without re-attaching. (Before the commit the read
+        // connections couldn't see it yet.)
+        if (commit && ddl_executed_ && catalog_) {
+            catalog_->ClearCache();
+        }
+        ddl_executed_ = false;
     }
+
+    // firebird_execute ran a DDL statement in this transaction.
+    void NoteDdl() {
+        ddl_executed_ = true;
+    }
+
 
     // Transaction snapshot (opt-in, see GetFirebirdTransactionSnapshot).
     // The coordinating connection comes from the ATTACH's pool and holds a
@@ -1166,6 +1212,8 @@ private:
 
     std::shared_ptr<FirebirdConnectionPool> pool_;
     std::shared_ptr<FirebirdConnectionPool> write_pool_;
+    FirebirdCatalog *catalog_ = nullptr;
+    bool ddl_executed_ = false;  // a DDL statement ran in the write transaction
     std::mutex write_lock_;
     std::unique_ptr<FirebirdConnection> write_conn_;
     std::string catalog_name_;
@@ -1478,6 +1526,22 @@ FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &
                                                int64_t lock_timeout_s) {
     auto &tx = Transaction::Get(context, catalog).Cast<FirebirdTransaction>();
     return tx.WriteConnection(lock_timeout_s);
+}
+
+void NoteFirebirdDdl(ClientContext &context, Catalog &catalog) {
+    Transaction::Get(context, catalog).Cast<FirebirdTransaction>().NoteDdl();
+}
+
+void ClearFirebirdCatalogCache(Catalog &catalog) {
+    auto &fb = catalog.Cast<FirebirdCatalog>();
+    fb.ClearCache();
+    ReleaseFirebirdIdleConnections(catalog);
+}
+
+void ReleaseFirebirdIdleConnections(Catalog &catalog) {
+    auto &fb = catalog.Cast<FirebirdCatalog>();
+    fb.Pool()->DiscardIdle();
+    fb.WritePool()->DiscardIdle();
 }
 
 // ---------------------------------------------------------------------------
