@@ -97,6 +97,15 @@ int FirebirdClientMajor();
 // isc_interprete'd text of an error status vector.
 std::string FirebirdStatusText(const ISC_STATUS *status);
 
+// Runs a CREATE DATABASE statement (it names its own server, user and
+// password) through isc_dsql_execute_immediate without an attachment, then
+// detaches from the new database. Errors never quote the statement.
+void FirebirdCreateDatabase(const std::string &sql, int dialect);
+
+// True when `sql` starts with CREATE DATABASE, after whitespace and
+// comments. (CREATE SCHEMA, its old synonym, creates a schema on Firebird 6.)
+bool IsCreateDatabaseStatement(const std::string &sql);
+
 // Removes credentials from a message that may echo a connection string:
 // 'password=...' values, 'scheme://user:pass@' user info, and every
 // literal occurrence of `password`.

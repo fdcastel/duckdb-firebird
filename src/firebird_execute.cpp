@@ -472,7 +472,10 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     int64_t executions = 0;
     bool rows_unknown = !bind.count_rows;
     std::string write_mode = "row";
-    RecordFirebirdWrite(context, bind.logged_sql, "execute", "", -1);
+    const bool create_db = !bind.has_source && IsCreateDatabaseStatement(bind.sql);
+    // A CREATE DATABASE statement carries a password: never log it.
+    RecordFirebirdWrite(context, create_db ? "CREATE DATABASE <statement not logged>" : bind.logged_sql, "execute", "",
+                        -1);
     auto obs = GetObservabilityState(context);
     const auto t0 = std::chrono::steady_clock::now();
     try {
@@ -483,7 +486,11 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         auto writes = LockFirebirdWrites(context, *bind.attach.catalog);
         // Each branch frees its statement at its end, before the commit
         // below hands its connection back to the write pool (which may close it).
-        if (!bind.has_source) {
+        if (create_db) {
+            // Creates another database; this ATTACH's transaction is not involved.
+            FirebirdCreateDatabase(bind.sql, bind.attach.dialect);
+            executions = 1;
+        } else if (!bind.has_source) {
             auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
             FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
             const bool returns_rows = CheckStatementType(stmt, true);
@@ -694,7 +701,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         // statement is the transaction, so commit the Firebird write here,
         // before the row is returned. Inside BEGIN ... COMMIT nothing changes.
         // (1.5 materializes the result instead; see the bind.)
-        if (context.transaction.IsAutoCommit()) {
+        if (context.transaction.IsAutoCommit() && !create_db) {
             CommitFirebirdWriteNow(context, *bind.attach.catalog);
         }
 #endif

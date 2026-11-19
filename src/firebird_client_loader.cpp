@@ -117,6 +117,7 @@ static void BindSymbols(FirebirdClientApi &api,
     BIND(isc_commit_transaction);
     BIND(isc_create_blob2);
     BIND(isc_put_segment);
+    BIND(isc_dsql_execute_immediate);
     // Optional: Firebird 4+ batched writes (IBatch) only.
     api.fb_get_master_interface = reinterpret_cast<decltype(api.fb_get_master_interface)>(
         PlatformSym(handle, "fb_get_master_interface"));
