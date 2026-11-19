@@ -169,12 +169,7 @@ def main() -> None:
                 print(lines[-1], flush=True)
                 continue
             table = f"PARW_{case[:6].upper()}_{code[path]}{'' if size is None else size}"
-            execute(con, ddl.format(t=table))
-            if path == "insert_into":
-                # DDL through firebird_execute doesn't refresh the ATTACH catalog (known gap):
-                # re-attach so fb.main sees the table just created.
-                con.execute("DETACH fb")
-                con.execute(f"ATTACH '{args.conn}' AS fb (TYPE firebird, READ_WRITE)")
+            execute(con, ddl.format(t=table))  # DDL through firebird_execute refreshes fb.main
             try:
                 secs = write(con, path, table, dml.format(t=table), source)
             except duckdb.Error as e:
