@@ -434,6 +434,13 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                                     "also commit the transaction's earlier writes",
                                     kFunctionName);
     }
+    // Inside an INSERT into the same ATTACH (INSERT ... SELECT ... FROM
+    // firebird_execute(...)), the INSERT's rows share the write transaction.
+    if (bind.commit_every > 0 && FirebirdWritesPinned(context, *bind.attach.catalog)) {
+        throw InvalidInputException("%s: commit_every can't run inside an INSERT into the same ATTACH: its "
+                                    "commits would also commit the INSERT's rows",
+                                    kFunctionName);
+    }
 
     // A DuckDB transaction writes to one attached database at most; this
     // also makes a READ ONLY DuckDB transaction refuse the write.

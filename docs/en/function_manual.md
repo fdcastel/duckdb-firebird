@@ -305,7 +305,8 @@ ATTACH 'database=C:/data/erp.fdb user=APP_READONLY password=secret'
 ```
 
 The ATTACH is read-only unless it is opened with DuckDB's `READ_WRITE`
-option, which allows writes through [`firebird_execute`](#firebird_executealias-sql):
+option, which allows writes through [`firebird_execute`](#firebird_executealias-sql)
+and [`INSERT INTO`](#insert-into-fbmaint-):
 
 ```sql
 ATTACH 'database=C:/data/erp.fdb user=APP_WRITER password=secret'
@@ -659,6 +660,57 @@ SELECT * FROM firebird_clear_cache('fb');
 ```
 
 Returns one row, `cleared BOOLEAN` (`true`).
+
+### `INSERT INTO fb.main.T ...`
+
+On an ATTACH opened with `READ_WRITE`, DuckDB's `INSERT` writes into a
+Firebird table.
+
+```sql
+ATTACH 'database=C:/data/erp.fdb;user=APP_WRITER;password=secret'
+  AS fb (TYPE firebird, READ_WRITE);
+
+INSERT INTO fb.main.CUSTOMER SELECT id, name, city FROM staging_customers;
+INSERT INTO fb.main.CUSTOMER (NAME, ID) VALUES ('Fa', 6);
+COPY fb.main.CUSTOMER FROM 'customers.csv' (HEADER);
+```
+
+- **How.** The INSERT prepares `INSERT INTO "T" ("C1", ...) VALUES (?, ...)`
+  once and runs it once per row, with the values encoded as for
+  `firebird_execute(..., source := ...)`, in the DuckDB transaction's
+  Firebird write transaction (see `firebird_execute`). It returns the row
+  count like any INSERT; `EXPLAIN` shows `FIREBIRD_INSERT`. `COPY ... FROM`
+  a file into an ATTACH table inserts the same way.
+- **Columns.** DuckDB casts the values to the ATTACH's column types first.
+  With a column list, only those columns are sent, and Firebird applies
+  its own defaults, triggers and generators to the others. Without one,
+  every column is sent; a `COMPUTED BY` column then makes Firebird refuse
+  the INSERT, so name the columns. `DEFAULT` inside a `VALUES` list
+  becomes NULL: the ATTACH doesn't declare Firebird's defaults to DuckDB.
+- **Refused:** `RETURNING`, `DEFAULT VALUES` and `ON CONFLICT` (use
+  `firebird_execute`, with `UPDATE OR INSERT ... MATCHING` for an upsert),
+  and an ATTACH without `READ_WRITE` or with `READ_ONLY`.
+- **Errors.** The first failing row stops the INSERT with "row N failed:"
+  and Firebird's error; the DuckDB transaction rolls back, and with it
+  every row of the INSERT.
+- **Fed by `firebird_execute`.** An `INSERT ... SELECT ... FROM
+  firebird_execute(...)` on the same ATTACH shares one write transaction,
+  committed when the statement ends, when the call's rows go straight into
+  the INSERT; with an `ORDER BY` or an aggregate in between, DuckDB 2.0 may
+  run the call first, and it then commits its own write. `commit_every` is
+  refused there.
+- **In a transaction.** Between `BEGIN` and `COMMIT`, scans of the ATTACH
+  don't see the inserted rows yet (they read on their own connections),
+  and, as for any DuckDB transaction, the transaction writes to one
+  attached database only.
+- **Not through `fb.main`:** `UPDATE`, `DELETE` and DDL. Use
+  `firebird_execute`.
+- **Telemetry.** One record per INSERT, made when it ends (so it follows
+  the record of a Firebird scan in its source): `operation = 'insert'`,
+  `table_name`, the prepared statement in `remote_sql`, `write_mode`
+  (`row`), `rows_written`, `firebird_time_us` (the encoding and Firebird
+  calls), `total_time_us` and `error_message`; `rows_affected` is `NULL`
+  (counting would cost one round trip per row).
 
 ### `firebird_attach_sql(connection_string [, schema])`
 
@@ -1124,7 +1176,8 @@ Useful fields include:
   (`partition_method`)
 - connection reuse details
 - what the record is (`operation`: `scan`, `query` for `firebird_query`,
-  `execute` for `firebird_execute`) and, for writes, `write_mode` (`row`),
+  `execute` for `firebird_execute`, `insert` for an INSERT into an ATTACH
+  table) and, for writes, `write_mode` (`row`),
   `rows_written` (executions) and `rows_affected` (Firebird's record
   counts; `NULL` when not counted). The three write columns are `NULL` for
   reads.
@@ -1564,7 +1617,7 @@ that scan then fails. See
 
 ### `SET firebird_write_lock_timeout = SECONDS`
 
-How long a Firebird write (`firebird_execute`) waits for a row lock held by
+How long a Firebird write (`firebird_execute`, `INSERT`) waits for a row lock held by
 another transaction before it fails with "update conflicts with concurrent
 update". Default 10; `0` fails at once (no wait); at most 32767. Read when
 the write transaction starts.

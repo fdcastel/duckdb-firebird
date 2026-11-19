@@ -47,8 +47,14 @@
   never sent as NULL. The query is read as a stream, on DuckDB 1.5 and
   2.0. `commit_every` commits every N rows; an error names the failing
   source row, or the query's own error, and what was kept.
+- `INSERT INTO fb.main.T ...` on an ATTACH opened with `READ_WRITE`: one
+  prepared `INSERT` run per row with the same parameter encoding, in the
+  DuckDB transaction's write transaction. Only the columns the INSERT
+  names are sent, so Firebird applies its own defaults, triggers and
+  generators to the rest (on DuckDB 1.5 and 2.0). `RETURNING`,
+  `DEFAULT VALUES` and `ON CONFLICT` are refused.
 - `firebird_last_query()` / `firebird_query_log()` gain four columns (25
-  in all): `operation` (`scan`, `query`, `execute`), and for writes
+  in all): `operation` (`scan`, `query`, `execute`, `insert`), and for writes
   `write_mode`, `rows_written` and `rows_affected`.
 - On Firebird 4+, a pooled connection that ran a write transaction or a
   `firebird_query` gets `ALTER SESSION RESET` before it goes back to the
