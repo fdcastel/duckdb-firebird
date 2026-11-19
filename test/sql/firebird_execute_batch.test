@@ -310,6 +310,15 @@ INSERT INTO rw.main.RW_LOG SELECT i, 'n' || i FROM range(2500) t(i);
 ----
 2500
 
+# rows_affected: Firebird's record counts in batch mode (no extra round
+# trip); not counted per row (it would cost one per row).
+query III
+SELECT write_mode = CASE WHEN major >= 4 THEN 'batch' ELSE 'row' END, rows_written,
+       rows_affected IS NOT DISTINCT FROM CASE WHEN major >= 4 THEN 2500 END
+  FROM (SELECT * FROM firebird_query_log() WHERE operation = 'insert' LIMIT 1), fb_major;
+----
+true	2500	true
+
 query II
 SELECT count(*), sum(ID) FROM ro.main.RW_LOG;
 ----

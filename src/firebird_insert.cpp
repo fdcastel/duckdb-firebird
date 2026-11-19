@@ -46,6 +46,8 @@ struct FirebirdInsertGlobalState : public GlobalSinkState {
     int64_t batch_size = 0;
     int64_t rows = 0;   // rows inserted (executed)
     int64_t added = 0;  // rows encoded
+    // Record counts the batches returned (batch mode only; -1 = not counted).
+    int64_t affected = -1;
 };
 
 struct FirebirdInsertSourceState : public GlobalSourceState {
@@ -92,10 +94,13 @@ public:
             state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_, true);
             std::string why;
             state->batch = FirebirdBatchWriter::TryCreate(conn, *state->stmt, *state->encoder,
-                                                          isc_info_sql_stmt_insert, false, &why);
+                                                          isc_info_sql_stmt_insert, true, &why);
             if (!state->batch) {
                 state->encoder.reset();
             }
+        }
+        if (state->batch) {
+            state->affected = 0;  // a batch returns record counts at no extra cost
         }
         if (!state->encoder) {
             state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_);
@@ -126,7 +131,7 @@ public:
                 Flush(state, *obs);
             }
         }
-        obs->SetWriteResult(state.batch ? "batch" : "row", state.rows, -1);
+        obs->SetWriteResult(state.batch ? "batch" : "row", state.rows, state.affected);
         return SinkResultType::NEED_MORE_INPUT;
     }
 
@@ -135,7 +140,7 @@ public:
         auto &state = input.global_state.Cast<FirebirdInsertGlobalState>();
         auto obs = GetObservabilityState(context);
         Flush(state, *obs);
-        obs->SetWriteResult(state.batch ? "batch" : "row", state.rows, -1);
+        obs->SetWriteResult(state.batch ? "batch" : "row", state.rows, state.affected);
         return SinkFinalizeType::READY;
     }
 
@@ -143,7 +148,7 @@ public:
                            const std::string &error) const {
         const std::string msg = "INSERT into Firebird table \"" + table_name_ + "\": row " +
                                 std::to_string(row) + " failed: " + error;
-        obs.SetWriteResult(state.batch ? "batch" : "row", state.rows, -1);
+        obs.SetWriteResult(state.batch ? "batch" : "row", state.rows, state.affected);
         obs.SetError(msg);
         throw InvalidInputException(msg);
     }
@@ -156,6 +161,9 @@ public:
         const int64_t first = state.rows;
         auto res = state.batch->Execute();
         state.rows += static_cast<int64_t>(res.executed);
+        if (state.affected >= 0) {
+            state.affected = res.affected < 0 ? -1 : state.affected + res.affected;
+        }
         if (res.failed) {
             Fail(state, obs, first + static_cast<int64_t>(res.failed_index) + 1, res.error);
         }

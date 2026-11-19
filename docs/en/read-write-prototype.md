@@ -392,7 +392,10 @@ the end (21 -> 25):
 - `rows_written`: executions (statement runs, source rows, inserted rows),
   NULL for reads;
 - `rows_affected`: Firebird's record counts, NULL for reads or when not
-  counted (`count_rows := false`, a statement that returns rows).
+  counted (`count_rows := false`, a statement that returns rows, a
+  batched EXECUTE BLOCK). An INSERT into an ATTACH table is counted in
+  batch mode, where the counts come back with the batch. Per row it is
+  not counted: that would cost one more round trip per row.
 
 Every `firebird_execute` call and every INSERT leaves one record with the
 SQL as prepared (`remote_sql`), its counts, its timing and, after a
