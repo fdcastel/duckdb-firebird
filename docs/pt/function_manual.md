@@ -945,6 +945,11 @@ Retorna uma linha:
   tipo do proprio comando: DDL rodado via `EXECUTE BLOCK` ou `EXECUTE
   STATEMENT` nao e, e nenhum dos dois passos acontece para ele; rode
   `firebird_clear_cache` depois, como para DDL feito fora deste ATTACH.
+- **`CREATE DATABASE`.** Um comando `CREATE DATABASE` (que cita seu
+  proprio servidor, usuario e senha) cria outro banco, fora da transacao
+  deste ATTACH (um `ROLLBACK` o mantem), com o dialeto SQL do ATTACH. Nao
+  aceita `source`. Seus erros nunca citam o comando, e o log de queries o
+  registra como `CREATE DATABASE <statement not logged>`.
 - **A escrita fica mesmo se o cliente para de ler, e um comando e tudo ou
   nada.** Um cliente que le a linha com `fetchone()` e fecha a conexao
   mantem a escrita. No DuckDB 1.5 o resultado do comando e materializado,

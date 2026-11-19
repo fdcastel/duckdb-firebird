@@ -1,0 +1,119 @@
+# name: test/sql/firebird_execute_create_db.test
+# description: CREATE DATABASE through firebird_execute
+# group: [firebird]
+#
+# FIREBIRD_RW_CREATE_PREFIX is '<server>:<directory>/' as the Firebird server
+# sees it (for example 'localhost/3050:/var/lib/firebird/data/'). Each run
+# creates a database with a new name there.
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+require-env FIREBIRD_RW_CREATE_PREFIX
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);
+
+statement ok
+SET VARIABLE new_db = '${FIREBIRD_RW_CREATE_PREFIX}' || 'created_' || replace(uuid()::VARCHAR, '-', '') || '.fdb';
+
+statement ok
+SET VARIABLE create_sql = 'CREATE DATABASE ''' || getvariable('new_db') ||
+    ''' USER ''SYSDBA'' PASSWORD ''masterkey'' PAGE_SIZE 8192 DEFAULT CHARACTER SET UTF8';
+
+query II
+SELECT * FROM firebird_execute('rw', getvariable('create_sql'));
+----
+0	1
+
+# The new database, with the ATTACH's dialect (3) and the statement's page
+# size and character set.
+statement ok
+SET VARIABLE new_cs = 'user=SYSDBA;password=masterkey;database=' || getvariable('new_db');
+
+query II
+SELECT "MON$SQL_DIALECT"::INTEGER, "MON$PAGE_SIZE"::INTEGER FROM firebird_scan(getvariable('new_cs'), 'MON$DATABASE');
+----
+3	8192
+
+query I
+SELECT trim("RDB$CHARACTER_SET_NAME") FROM firebird_scan(getvariable('new_cs'), 'RDB$DATABASE');
+----
+UTF8
+
+# It exists now: creating it again fails, and the error does not quote the
+# statement (it carries the password).
+statement error
+SELECT * FROM firebird_execute('rw', getvariable('create_sql'));
+----
+<REGEX>:.*CREATE DATABASE failed.*
+
+statement error
+SELECT * FROM firebird_execute('rw', getvariable('create_sql'));
+----
+<!REGEX>:.*masterkey.*
+
+# The query log never holds the statement either (it carries a password).
+query II
+SELECT operation, remote_sql FROM firebird_last_query();
+----
+execute	CREATE DATABASE <statement not logged>
+
+# A source would prepare it, and a prepare error quotes the statement.
+statement error
+SELECT * FROM firebird_execute('rw', getvariable('create_sql'), source := 'SELECT 1');
+----
+CREATE DATABASE takes no source
+
+statement error
+SELECT * FROM firebird_execute('rw', getvariable('create_sql'), source := 'SELECT 1');
+----
+<!REGEX>:.*masterkey.*
+
+# It is outside the DuckDB transaction: a ROLLBACK keeps the database.
+statement ok
+SET VARIABLE tx_db = '${FIREBIRD_RW_CREATE_PREFIX}' || 'created_' || replace(uuid()::VARCHAR, '-', '') || '.fdb';
+
+statement ok
+BEGIN;
+
+query II
+SELECT * FROM firebird_execute('rw', 'CREATE DATABASE ''' || getvariable('tx_db') || ''' USER ''SYSDBA'' PASSWORD ''masterkey'' DEFAULT CHARACTER SET UTF8');
+----
+0	1
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM firebird_scan('user=SYSDBA;password=masterkey;database=' || getvariable('tx_db'), 'RDB$DATABASE');
+----
+1
+
+# An ATTACH with dialect 1 (FIREBIRD_RW_DB carries ?charset=UTF8 in CI)
+# creates a dialect-1 database.
+statement ok
+ATTACH '${FIREBIRD_RW_DB}&dialect=1' AS rw1 (TYPE firebird, READ_WRITE);
+
+statement ok
+SET VARIABLE d1_db = '${FIREBIRD_RW_CREATE_PREFIX}' || 'created_' || replace(uuid()::VARCHAR, '-', '') || '.fdb';
+
+query II
+SELECT * FROM firebird_execute('rw1', 'CREATE DATABASE ''' || getvariable('d1_db') || ''' USER ''SYSDBA'' PASSWORD ''masterkey'' DEFAULT CHARACTER SET UTF8');
+----
+0	1
+
+query I
+SELECT "MON$SQL_DIALECT"::INTEGER FROM firebird_scan('user=SYSDBA;password=masterkey;database=' || getvariable('d1_db'), 'MON$DATABASE');
+----
+1
+
+# Needs the READ_WRITE opt-in like any other write.
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS ro (TYPE firebird);
+
+statement error
+SELECT * FROM firebird_execute('ro', getvariable('create_sql'));
+----
+READ_WRITE

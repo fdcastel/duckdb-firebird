@@ -684,6 +684,11 @@ Returns one row:
   own type: DDL run through `EXECUTE BLOCK` or `EXECUTE STATEMENT` is not,
   so neither step happens for it; run `firebird_clear_cache` after it, as
   for DDL made outside this ATTACH.
+- **`CREATE DATABASE`.** A `CREATE DATABASE` statement (it names its own
+  server, user and password) creates another database, outside this
+  ATTACH's transaction (a `ROLLBACK` keeps it), with the ATTACH's SQL
+  dialect. It takes no `source`. Its errors never quote the statement, and
+  the query log records it as `CREATE DATABASE <statement not logged>`.
 - **The write is kept when the client stops reading, and a statement is
   all or nothing.** A client that reads the one row with `fetchone()` and
   closes still keeps the write. On DuckDB 1.5 the statement's result is

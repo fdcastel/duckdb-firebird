@@ -785,6 +785,7 @@ public:
     const std::shared_ptr<FirebirdConnectionPool> &WritePool() const { return write_pool_; }
     // ATTACH ... (TYPE firebird, READ_WRITE): writes are allowed.
     bool write_enabled = false;
+    int Dialect() const { return conn_info_.dialect; }
     NoneEncoding NoneEncodingOption() const { return none_encoding_; }
     bool NumericWidenInt64() const { return numeric_widen_int64_; }
 
@@ -1677,6 +1678,7 @@ FirebirdAttachHandle GetFirebirdAttachHandle(ClientContext &context, const strin
     handle.numeric_widen_int64 = fb_catalog.NumericWidenInt64();
     handle.write_enabled = fb_catalog.write_enabled;
     handle.read_only = fb_catalog.GetAttached().IsReadOnly();
+    handle.dialect = fb_catalog.Dialect();
     return handle;
 }
 

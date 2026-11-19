@@ -73,7 +73,7 @@ static void LoadInternal(ExtensionLoader &loader) {
         {"firebird", "query"}));
     loader.RegisterFunction(DescribedTableFunction(
         GetFirebirdExecuteFunction(), {"alias", "sql"},
-        "Runs one Firebird statement (DML, DDL, EXECUTE PROCEDURE, EXECUTE BLOCK) on an "
+        "Runs one Firebird statement (DML, DDL, EXECUTE PROCEDURE, EXECUTE BLOCK, CREATE DATABASE) on an "
         "ATTACH opened with READ_WRITE, in the DuckDB transaction's Firebird write "
         "transaction; returns rows_affected and executions.",
         "SELECT * FROM firebird_execute('fb', 'UPDATE CUSTOMER SET ACTIVE = TRUE WHERE ID = 1');",
