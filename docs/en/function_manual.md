@@ -604,6 +604,11 @@ Returns one row:
   in its metadata cache, and Firebird refuses to drop or alter them while
   it lives ("object ... is in use"). For DDL made outside this ATTACH, see
   `firebird_clear_cache`.
+- **`CREATE DATABASE`.** A `CREATE DATABASE` statement (it names its own
+  server, user and password) creates another database, outside this
+  ATTACH's transaction, with the ATTACH's SQL dialect. Its errors never
+  quote the statement, and the query log records it as
+  `CREATE DATABASE <statement not logged>`.
 - **The write is kept when the client stops reading.** A client that reads
   the one row with `fetchone()` and closes still keeps the write. On
   DuckDB 1.5 the statement's result is materialized, as DuckDB does for
