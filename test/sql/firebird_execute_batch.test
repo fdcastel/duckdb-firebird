@@ -186,6 +186,51 @@ SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID) VALUES (?)',
 ----
 source row 251 failed
 
+# --- A wide row: the batch never outgrows the IBatch buffer --------------------------
+# ~64 KB per message: 1000 rows would be ~64 MB, past the buffer; batch_size
+# is an upper bound, never a failure.
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_WIDE');
+
+query II
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_WIDE (ID, A, B) VALUES (?, ?, ?)',
+    source := 'SELECT i, repeat(''a'', i % 50), ''b'' || i FROM range(1000) t(i)', batch_size := 1000);
+----
+1000	1000
+
+query I
+SELECT write_mode = CASE WHEN major >= 4 THEN 'batch' ELSE 'row' END FROM firebird_last_query(), fb_major;
+----
+true
+
+query III
+SELECT count(*), sum(ID), sum(strlen(A)) FROM ro.main.RW_WIDE;
+----
+1000	499500	24500
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_WIDE');
+
+statement ok
+SET firebird_write_batch_size = 10000;
+
+query I
+INSERT INTO rw.main.RW_WIDE SELECT i, 'x', 'y' FROM range(3000) t(i);
+----
+3000
+
+statement ok
+SET firebird_write_batch_size = 100;
+
+query I
+SELECT count(*) FROM ro.main.RW_WIDE;
+----
+3000
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_WIDE');
+
 # --- EXECUTE BLOCK: batched on Firebird 5+, per row on Firebird 3/4 -------------
 
 statement ok

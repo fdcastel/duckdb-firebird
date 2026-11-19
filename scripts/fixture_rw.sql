@@ -89,6 +89,14 @@ CREATE TABLE RW_DEFAULTS (
     QTY  INTEGER DEFAULT 7
 );
 
+/* A wide row: two VARCHAR(8000) in UTF8 (4 bytes per character), about
+ * 64 KB per parameter message -- a batch of 1000 rows is ~64 MB. */
+CREATE TABLE RW_WIDE (
+    ID INTEGER NOT NULL,
+    A  VARCHAR(8000),
+    B  VARCHAR(8000)
+);
+
 CREATE TABLE RW_LOG (
     ID INTEGER NOT NULL,
     NOTE VARCHAR(20)

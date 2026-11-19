@@ -362,7 +362,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                 ++added;
                 if (!batch) {
                     ++executions;
-                } else if (static_cast<int64_t>(batch->Pending()) >= bind.batch_size) {
+                } else if (static_cast<int64_t>(batch->Pending()) >= bind.batch_size || batch->Full()) {
                     flush();
                 }
                 if (bind.commit_every > 0 && added % bind.commit_every == 0) {

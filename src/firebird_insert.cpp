@@ -121,7 +121,8 @@ public:
             ++state.added;
             if (!state.batch) {
                 ++state.rows;
-            } else if (static_cast<int64_t>(state.batch->Pending()) >= state.batch_size) {
+            } else if (static_cast<int64_t>(state.batch->Pending()) >= state.batch_size ||
+                       state.batch->Full()) {
                 Flush(state, *obs);
             }
         }

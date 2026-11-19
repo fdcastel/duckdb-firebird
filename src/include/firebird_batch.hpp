@@ -35,6 +35,12 @@ public:
     idx_t Pending() const {
         return pending_;
     }
+    // True when one more message might not fit the batch buffer: the
+    // caller must Execute() before the next Add(). A batch of wide rows
+    // holds fewer than batch_size messages.
+    bool Full() const {
+        return pending_ >= max_messages_;
+    }
 
     struct Result {
         idx_t executed = 0;         // messages that ran, the failed one excluded
@@ -52,6 +58,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     idx_t pending_ = 0;
+    idx_t max_messages_ = 1;
 };
 
 // The statement types a server of this major version can batch.

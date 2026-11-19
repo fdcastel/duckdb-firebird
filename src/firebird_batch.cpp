@@ -17,6 +17,11 @@ namespace duckdb {
 
 namespace {
 
+// Size of the batch buffer, set explicitly (Firebird's default; max 256
+// MB) so the number of messages that fit can be computed: add() fails with
+// "batch too big" once the buffer is full.
+constexpr unsigned kBatchBufferBytes = 16u * 1024u * 1024u;
+
 std::string StatusErrors(Firebird::CheckStatusWrapper &status) {
     return FirebirdStatusText(reinterpret_cast<const ISC_STATUS *>(status.getErrors()));
 }
@@ -161,6 +166,7 @@ std::unique_ptr<FirebirdBatchWriter> FirebirdBatchWriter::TryCreate(FirebirdConn
     if (d.count_rows) {
         pb->insertInt(status, Firebird::IBatch::TAG_RECORD_COUNTS, 1);
     }
+    pb->insertInt(status, Firebird::IBatch::TAG_BUFFER_BYTES_SIZE, static_cast<int>(kBatchBufferBytes));
     d.batch = d.istmt->createBatch(status, d.meta, pb->getBufferLength(status), pb->getBuffer(status));
     pb->dispose();
     if (Failed(*status)) {
@@ -175,9 +181,13 @@ std::unique_ptr<FirebirdBatchWriter> FirebirdBatchWriter::TryCreate(FirebirdConn
         d.types.push_back(layout[i].sqltype);
     }
     d.message.assign(d.meta->getMessageLength(status), 0);
+    const unsigned aligned = d.meta->getAlignedLength(status);
     if (Failed(*status)) {
         return no("message layout: " + StatusErrors(*status));
     }
+    // Messages are stored aligned; leave one message of slack.
+    const idx_t fit = aligned > 0 ? kBatchBufferBytes / aligned : 1;
+    writer->max_messages_ = fit > 1 ? fit - 1 : 1;
     return writer;
 }
 

@@ -433,7 +433,15 @@ When it batches:
 `write_mode` in the query log says which mode ran.
 
 Behavior:
-- The batch is sent every N rows and at every `commit_every` boundary.
+- The batch is sent every N rows, at every `commit_every` boundary, and
+  whenever the next message might not fit its buffer. The buffer is set
+  explicitly to 16 MB (`TAG_BUFFER_BYTES_SIZE`, Firebird's default), and a
+  batch holds at most 16 MB divided by the aligned message length, minus
+  one. So `batch_size` is an upper bound: a wide row gets smaller batches,
+  never a "batch too big" error. A 25-parameter upsert with two
+  VARCHAR(250) UTF8 columns hit that error at row 6,804 with batch 10000
+  before this cap; the test's two VARCHAR(8000) UTF8 columns (about 64 KB
+  per message) hit it at row 382 with batch 1000.
   There is no MULTIERROR: the first failing message stops the call, and
   the error names the source row (batch start + index), with the same
   "what was kept" contract as the per-row path.
@@ -453,6 +461,9 @@ Tests: `test/sql/firebird_execute_batch.test` (Firebird 3/4/5, with
 - 1.5 into NUMERIC(9,3) from DECIMAL(2,1), DECIMAL(38,10) (INT128),
   DOUBLE, INTEGER, HUGEINT and VARCHAR;
 - 250 rows across three batches;
+- a wide row (two VARCHAR(8000) UTF8, about 64 KB per message): 1000 rows
+  at batch 1000 through `firebird_execute`, and 3000 rows at batch 10000
+  through INSERT INTO, with no buffer overflow;
 - an error in row 4 keeps nothing, or rows 1 to 2 with `commit_every`;
 - a failure in a later batch names source row 251;
 - EXECUTE BLOCK upsert (batch on 5+, per row on 3/4, `rows_affected`
