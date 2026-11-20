@@ -301,6 +301,23 @@ SELECT count(*), sum(ID) FROM ro.main.RW_LOG;
 ----
 20000	199990000
 
+# --- An INSERT fed by firebird_execute on the same ATTACH ---------------------------
+# Both share the transaction's write connection. The INSERT keeps its
+# statement prepared on it, so the call's early autocommit commit (DuckDB
+# 2.0) leaves the commit to the statement: both rows are committed together.
+
+query I
+INSERT INTO rw.main.RW_TARGET (ID)
+SELECT executions + 600000 FROM firebird_execute('rw', 'INSERT INTO RW_LOG (ID, NOTE) VALUES (-62, ''pinned'')');
+----
+1
+
+query II
+SELECT (SELECT count(*) FROM firebird_query('ro', 'SELECT ID FROM RW_TARGET WHERE ID = 600001')),
+       (SELECT count(*) FROM firebird_query('ro', 'SELECT ID FROM RW_LOG WHERE ID = -62'));
+----
+1	1
+
 statement ok
 SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_LOG');
 

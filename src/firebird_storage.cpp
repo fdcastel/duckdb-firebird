@@ -1024,6 +1024,17 @@ public:
         return write_use_lock_;
     }
 
+    // Open INSERTs with a statement on the write connection (see
+    // PinFirebirdWrites).
+    void PinWrites(int64_t delta) {
+        std::lock_guard<std::mutex> g(write_lock_);
+        write_pins_ += delta;
+    }
+    bool WritesPinned() {
+        std::lock_guard<std::mutex> g(write_lock_);
+        return write_pins_ > 0;
+    }
+
 
     // Transaction snapshot (opt-in, see GetFirebirdTransactionSnapshot).
     // The coordinating connection comes from the ATTACH's pool and holds a
@@ -1226,6 +1237,7 @@ private:
     bool ddl_executed_ = false;  // a DDL statement ran in the write transaction
     std::mutex write_lock_;
     std::mutex write_use_lock_;
+    int64_t write_pins_ = 0;
     std::unique_ptr<FirebirdConnection> write_conn_;
     std::string catalog_name_;
     std::shared_ptr<std::atomic<bool>> no_snapshot_numbers_;
@@ -1543,8 +1555,23 @@ std::unique_lock<std::mutex> LockFirebirdWrites(ClientContext &context, Catalog 
     return std::unique_lock<std::mutex>(tx.WriteUseLock());
 }
 
+void PinFirebirdWrites(ClientContext &context, Catalog &catalog) {
+    Transaction::Get(context, catalog).Cast<FirebirdTransaction>().PinWrites(1);
+}
+
+void UnpinFirebirdWrites(ClientContext &context, Catalog &catalog) {
+    Transaction::Get(context, catalog).Cast<FirebirdTransaction>().PinWrites(-1);
+}
+
 void CommitFirebirdWriteNow(ClientContext &context, Catalog &catalog) {
-    Transaction::Get(context, catalog).Cast<FirebirdTransaction>().EndWrite(true);
+    auto &tx = Transaction::Get(context, catalog).Cast<FirebirdTransaction>();
+    // An INSERT in this statement (fed by this firebird_execute) still has
+    // its statement prepared on the connection: the commit waits for the
+    // DuckDB transaction.
+    if (tx.WritesPinned()) {
+        return;
+    }
+    tx.EndWrite(true);
 }
 
 void NoteFirebirdDdl(ClientContext &context, Catalog &catalog) {

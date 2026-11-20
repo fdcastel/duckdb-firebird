@@ -36,8 +36,15 @@ FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &
 // connection would not see the first call's rows nor share its locks).
 std::unique_lock<std::mutex> LockFirebirdWrites(ClientContext &context, Catalog &catalog);
 
+// An INSERT keeps a statement prepared on the write connection from its
+// first step to its last. While one is open, CommitFirebirdWriteNow does
+// nothing, and the write commits with the DuckDB transaction.
+void PinFirebirdWrites(ClientContext &context, Catalog &catalog);
+void UnpinFirebirdWrites(ClientContext &context, Catalog &catalog);
+
 // Commits the current DuckDB transaction's Firebird write transaction on
-// this ATTACH now, if one was started (a later write starts a new one).
+// this ATTACH now, if one was started (a later write starts a new one), and
+// unless an INSERT has it pinned (see PinFirebirdWrites).
 void CommitFirebirdWriteNow(ClientContext &context, Catalog &catalog);
 
 // firebird_execute ran a DDL statement in the current DuckDB transaction:

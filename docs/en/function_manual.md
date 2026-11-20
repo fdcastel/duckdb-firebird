@@ -660,6 +660,9 @@ COPY fb.main.CUSTOMER FROM 'customers.csv' (HEADER);
 - **Errors.** The first failing row stops the INSERT with "row N failed:"
   and Firebird's error; the DuckDB transaction rolls back, and with it
   every row of the INSERT.
+- **Fed by `firebird_execute`.** An `INSERT ... SELECT ... FROM
+  firebird_execute(...)` on the same ATTACH shares one write transaction,
+  committed when the statement ends.
 - **In a transaction.** Between `BEGIN` and `COMMIT`, scans of the ATTACH
   don't see the inserted rows yet (they read on their own connections),
   and, as for any DuckDB transaction, the transaction writes to one

@@ -914,6 +914,9 @@ INSERT INTO fb.main.CUSTOMER (NAME, ID) VALUES ('Fa', 6);
 - **Erros.** A primeira linha que falha para o INSERT com "row N failed:"
   e o erro do Firebird; a transacao DuckDB e desfeita, e com ela todas as
   linhas do INSERT.
+- **Alimentado por `firebird_execute`.** Um `INSERT ... SELECT ... FROM
+  firebird_execute(...)` no mesmo ATTACH compartilha uma transacao de
+  escrita, confirmada quando o comando termina.
 - **Numa transacao.** Entre `BEGIN` e `COMMIT`, os scans do ATTACH ainda
   nao veem as linhas inseridas (leem nas proprias conexoes), e, como em
   qualquer transacao DuckDB, a transacao escreve em um unico banco anexado.
