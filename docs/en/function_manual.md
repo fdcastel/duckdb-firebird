@@ -529,9 +529,20 @@ Returns one row:
   `rows_affected` is `NULL`. Use `firebird_query` to read rows.
 - **No parameters.** A statement with `?` placeholders is refused: write
   the values into `sql`.
+- **Session statements are refused:** `SET ROLE`, `SET TRUSTED ROLE`,
+  `SET BIND`, `SET DECFLOAT`, `SET TIME ZONE`, `SET SESSION ...`,
+  `SET STATEMENT TIMEOUT`, `SET OPTIMIZE`, `ALTER SESSION`. The write
+  connection goes back to the ATTACH's pool, and later writes would
+  inherit the change.
+- **Passwords.** The query log and error messages show the literal after
+  `PASSWORD` (`CREATE USER ... PASSWORD '...'`, `EXECUTE STATEMENT ...
+  PASSWORD '...'`) as `'***'`.
+- **Two calls in one statement** (for example under `UNION ALL`) run one
+  after the other, on the DuckDB transaction's one write transaction.
 - **DDL.** `CREATE`, `ALTER` and `DROP` run like any statement. Once the
   transaction commits, the ATTACH loads its tables again, so `fb.main`
-  shows the change without a new ATTACH. Before DDL, the ATTACH closes its
+  shows the change without a new ATTACH; a prepared statement sees it too
+  (DuckDB binds it again on every execution). Before DDL, the ATTACH closes its
   idle connections: an idle Firebird attachment keeps the tables it used
   in its metadata cache, and Firebird refuses to drop or alter them while
   it lives ("object ... is in use"). For DDL made outside this ATTACH, see

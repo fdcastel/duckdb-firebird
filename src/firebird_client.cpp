@@ -931,7 +931,15 @@ void FirebirdConnection::CommitWrite() {
     CheckStatus(status, "isc_commit_transaction");
     tr_ = 0;
     in_write_ = false;
-    StartReadOnlyTransaction();
+    // The write is committed: failing to start the next read-only
+    // transaction must not turn it into a failed COMMIT (a client could
+    // write again). The connection is marked broken instead, so the pool
+    // drops it.
+    try {
+        StartReadOnlyTransaction();
+    } catch (...) {
+        broken_.store(true, std::memory_order_relaxed);
+    }
 }
 
 void FirebirdConnection::RollbackWrite() {

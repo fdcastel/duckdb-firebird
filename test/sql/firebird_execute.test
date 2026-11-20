@@ -235,6 +235,64 @@ SELECT * FROM firebird_execute('rw', 'COMMIT');
 ----
 transactions follow the DuckDB transaction
 
+# Session statements: the write connection goes back to the ATTACH's pool, so
+# their change would outlive the DuckDB transaction. Refused at bind, on every
+# server version (matched on the first words, after spaces and comments).
+statement error
+SELECT * FROM firebird_execute('rw', 'SET ROLE RDB$ADMIN');
+----
+SET ROLE is refused
+
+statement error
+SELECT * FROM firebird_execute('rw', '  /* a comment */ set time zone ''+03:00''');
+----
+SET TIME ZONE is refused
+
+statement error
+SELECT * FROM firebird_execute('rw', 'SET SESSION IDLE TIMEOUT 1');
+----
+SET SESSION is refused
+
+statement error
+SELECT * FROM firebird_execute('rw', '-- comment
+SET BIND OF DECFLOAT TO DOUBLE PRECISION');
+----
+SET BIND is refused
+
+statement error
+SELECT * FROM firebird_execute('rw', 'SET TRUSTED ROLE');
+----
+SET TRUSTED ROLE is refused
+
+statement error
+SELECT * FROM firebird_execute('rw', 'ALTER SESSION RESET');
+----
+ALTER SESSION is refused
+
+# --- A literal password reaches neither the query log nor an error --------------
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'CREATE USER FBX_T32 PASSWORD ''s3cret-32a''');
+
+query II
+SELECT remote_sql LIKE '%s3cret%', remote_sql LIKE '%PASSWORD ''***''%' FROM firebird_last_query();
+----
+false	true
+
+# The user exists now: creating it again fails, and the error hides the literal.
+statement error
+SELECT * FROM firebird_execute('rw', 'CREATE USER FBX_T32 PASSWORD ''s3cret-32b''');
+----
+<!REGEX>:.*s3cret.*
+
+query II
+SELECT error_message LIKE '%s3cret%', error_message LIKE '%***%' FROM firebird_last_query();
+----
+false	true
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DROP USER FBX_T32');
+
 # --- A lock held by another writer: a clear error, no hang ---------------------
 
 statement ok con1
@@ -262,6 +320,28 @@ query I
 SELECT count(*) FROM rw.main.RW_LOG;
 ----
 5
+
+# --- Two calls in one statement: one after the other ----------------------------
+# They can run in parallel pipelines and share the DuckDB transaction's write
+# connection, so each waits for the other (no second connection: it would not
+# see the first call's rows nor share its locks). The race itself can't be
+# forced here; this runs the path.
+
+query II
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_LOG (ID, NOTE) VALUES (60, ''union a'')')
+UNION ALL
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_LOG (ID, NOTE) VALUES (61, ''union b'')');
+----
+1	1
+1	1
+
+query I
+SELECT count(*) FROM firebird_query('ro', 'SELECT ID FROM RW_LOG WHERE ID IN (60, 61)');
+----
+2
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_LOG WHERE ID IN (60, 61)');
 
 # --- Pool disabled: a write connection is closed as soon as it is released ------
 # (On DuckDB 2.0 an autocommit call commits before returning its row, and the

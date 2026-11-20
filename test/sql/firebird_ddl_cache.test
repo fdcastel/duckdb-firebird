@@ -50,6 +50,17 @@ SELECT ID, NAME FROM rw.main.RW_DDL_A ORDER BY ID;
 2	two
 
 # --- ALTER TABLE: the new column shows up ---------------------------------------
+# A prepared statement too: the ATTACH reports no catalog version, so DuckDB
+# binds a prepared statement over it again on every execution.
+
+statement ok
+PREPARE p_ddl AS SELECT * FROM rw.main.RW_DDL_A ORDER BY ID;
+
+query II
+EXECUTE p_ddl;
+----
+1	one
+2	two
 
 statement ok
 SELECT * FROM firebird_execute('rw', 'ALTER TABLE RW_DDL_A ADD QTY NUMERIC(9,3)');
@@ -62,6 +73,15 @@ SELECT ID, NAME, QTY FROM rw.main.RW_DDL_A ORDER BY ID;
 ----
 1	one	1.500
 2	two	NULL
+
+query III
+EXECUTE p_ddl;
+----
+1	one	1.500
+2	two	NULL
+
+statement ok
+DEALLOCATE p_ddl;
 
 # --- In a DuckDB transaction: refreshed at COMMIT, not on ROLLBACK -----------------
 
@@ -104,6 +124,13 @@ query I
 SELECT * FROM firebird_clear_cache('other');
 ----
 true
+
+# Listing the tables loads them under the same lock hold as a lookup (a
+# clear from another connection in between can't empty the list).
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'other' AND table_name = 'RW_DDL_A';
+----
+1
 
 query I
 SELECT count(*) FROM other.main.RW_DDL_A;

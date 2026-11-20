@@ -780,9 +780,20 @@ Retorna uma linha:
   `firebird_query`.
 - **Sem parametros.** Um comando com `?` e recusado: escreva os valores no
   `sql`.
+- **Comandos de sessao sao recusados:** `SET ROLE`, `SET TRUSTED ROLE`,
+  `SET BIND`, `SET DECFLOAT`, `SET TIME ZONE`, `SET SESSION ...`,
+  `SET STATEMENT TIMEOUT`, `SET OPTIMIZE`, `ALTER SESSION`. A conexao de
+  escrita volta ao pool do ATTACH, e as escritas seguintes herdariam a
+  mudanca.
+- **Senhas.** O log de queries e as mensagens de erro mostram o literal
+  depois de `PASSWORD` (`CREATE USER ... PASSWORD '...'`, `EXECUTE
+  STATEMENT ... PASSWORD '...'`) como `'***'`.
+- **Duas chamadas num comando** (por exemplo com `UNION ALL`) rodam uma
+  depois da outra, na unica transacao de escrita da transacao DuckDB.
 - **DDL.** `CREATE`, `ALTER` e `DROP` rodam como qualquer comando. Depois do
   commit, o ATTACH carrega suas tabelas de novo, e `fb.main` mostra a
-  mudanca sem novo ATTACH. Antes do DDL, o ATTACH fecha suas conexoes
+  mudanca sem novo ATTACH; um comando preparado tambem a ve (o DuckDB o
+  liga de novo a cada execucao). Antes do DDL, o ATTACH fecha suas conexoes
   ociosas: uma conexao Firebird ociosa guarda no cache de metadados as
   tabelas que usou, e o Firebird recusa alterar ou excluir essas tabelas
   enquanto ela existir ("object ... is in use"). Para DDL feito fora deste
