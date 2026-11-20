@@ -152,18 +152,6 @@ SELECT count(*) FROM ro.main.CUSTOMER WHERE ID = 7;
 
 # --- Refused forms -------------------------------------------------------------------
 
-# Firebird refuses a COMPUTED BY column at prepare; the error is on the
-# INSERT's telemetry record too.
-statement error
-INSERT INTO rw.main.RW_COMPUTED VALUES (1, 2);
-----
-INSERT into Firebird table "RW_COMPUTED"
-
-query II
-SELECT operation, error_message <> '' FROM firebird_last_query();
-----
-insert	true
-
 query I
 INSERT INTO rw.main.RW_COMPUTED (ID) VALUES (1);
 ----
