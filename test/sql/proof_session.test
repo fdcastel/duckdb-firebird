@@ -1,0 +1,15 @@
+# name: test/sql/proof_session.test
+# description: proof (fork only): session statements refused
+# group: [firebird]
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);
+
+statement error
+SELECT * FROM firebird_execute('rw', 'SET SESSION IDLE TIMEOUT 1');
+----
+SET SESSION is refused

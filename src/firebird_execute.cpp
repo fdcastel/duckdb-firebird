@@ -19,14 +19,11 @@
 // reports them; NULL with count_rows := false) and executions.
 
 #include <cctype>
-#include <cctype>
 #include <chrono>
-#include <regex>
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/database_modification_type.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
@@ -51,10 +48,6 @@ constexpr const char *kFunctionName = "firebird_execute";
 struct FirebirdExecuteBindData : public TableFunctionData {
     std::string alias;
     std::string sql;
-    // The SQL as the query log and error messages show it, and the
-    // password literals it hides (see RedactPasswords).
-    std::string logged_sql;
-    std::vector<std::string> secrets;
     FirebirdAttachHandle attach;
     int64_t lock_timeout_s = 10;
     bool has_source = false;
@@ -79,101 +72,6 @@ void CheckWritable(const FirebirdAttachHandle &attach, const std::string &alias)
                               "(TYPE firebird, READ_WRITE) to write to Firebird.",
                               kFunctionName, alias);
     }
-}
-
-// The first words of a statement, upper-cased, after leading spaces and
-// comments (at most `count`).
-std::vector<std::string> LeadingWords(const std::string &sql, size_t count) {
-    std::vector<std::string> words;
-    size_t i = 0;
-    while (i < sql.size() && words.size() < count) {
-        const unsigned char c = static_cast<unsigned char>(sql[i]);
-        if (std::isspace(c)) {
-            ++i;
-        } else if (c == '-' && i + 1 < sql.size() && sql[i + 1] == '-') {
-            while (i < sql.size() && sql[i] != '\n') {
-                ++i;
-            }
-        } else if (c == '/' && i + 1 < sql.size() && sql[i + 1] == '*') {
-            const auto end = sql.find("*/", i + 2);
-            i = end == std::string::npos ? sql.size() : end + 2;
-        } else if (std::isalpha(c)) {
-            const size_t start = i;
-            while (i < sql.size() && (std::isalnum(static_cast<unsigned char>(sql[i])) || sql[i] == '_')) {
-                ++i;
-            }
-            words.push_back(StringUtil::Upper(sql.substr(start, i - start)));
-        } else {
-            break;
-        }
-    }
-    return words;
-}
-
-// Session statements change the attachment, not the data. The write
-// connection goes back to the pool when the DuckDB transaction ends and
-// serves later writes of other DuckDB connections, which would inherit the
-// change (a role, a time zone, an idle timeout that makes the server close
-// it), so they are refused like transaction control.
-void CheckSessionStatement(const std::string &sql) {
-    const auto w = LeadingWords(sql, 3);
-    std::string what;
-    if (w.size() >= 2 && w[0] == "ALTER" && w[1] == "SESSION") {
-        what = "ALTER SESSION";
-    } else if (w.size() >= 2 && w[0] == "SET") {
-        static const char *const kOneWord[] = {"ROLE", "BIND", "DECFLOAT", "SESSION", "OPTIMIZE", "SEARCH_PATH"};
-        static const char *const kTwoWords[][2] = {{"TRUSTED", "ROLE"}, {"TIME", "ZONE"}, {"STATEMENT", "TIMEOUT"}};
-        for (auto *word : kOneWord) {
-            if (w[1] == word) {
-                what = "SET " + w[1];
-            }
-        }
-        for (auto &pair : kTwoWords) {
-            if (w[1] == pair[0] && w.size() >= 3 && w[2] == pair[1]) {
-                what = "SET " + w[1] + " " + w[2];
-            }
-        }
-    }
-    if (!what.empty()) {
-        throw BinderException("%s: %s is refused: it changes the session of the write connection, which goes back "
-                              "to the ATTACH's pool and would keep the change for later writes",
-                              kFunctionName, what);
-    }
-}
-
-// The SQL as the query log and error messages show it: every literal after
-// PASSWORD (CREATE / ALTER USER, EXECUTE STATEMENT ... PASSWORD) becomes
-// '***'. secrets gets each literal's text, as written and with '' undone.
-std::string RedactPasswords(const std::string &sql, std::vector<std::string> &secrets) {
-    static const std::regex kPassword(R"(\bPASSWORD(\s+)'((?:[^']|'')*)')",
-                                      std::regex::ECMAScript | std::regex::icase);
-    std::string out;
-    auto last = sql.cbegin();
-    for (std::sregex_iterator it(sql.cbegin(), sql.cend(), kPassword), end; it != end; ++it) {
-        const auto &m = *it;
-        out.append(last, m[0].first);
-        out += m.str(0).substr(0, 8) + m.str(1) + "'***'";
-        const std::string written = m.str(2);
-        if (!written.empty()) {
-            secrets.push_back(written);
-            const std::string plain = StringUtil::Replace(written, "''", "'");
-            if (plain != written) {
-                secrets.push_back(plain);
-            }
-        }
-        last = m[0].second;
-    }
-    out.append(last, sql.cend());
-    return out;
-}
-
-// An error message with the SQL and its password literals hidden.
-std::string RedactMessage(const std::string &message, const FirebirdExecuteBindData &bind) {
-    std::string out = StringUtil::Replace(message, bind.sql, bind.logged_sql);
-    for (auto &secret : bind.secrets) {
-        out = StringUtil::Replace(out, secret, "***");
-    }
-    return out;
 }
 
 // Transaction control belongs to DuckDB. A statement that returns rows
@@ -213,7 +111,6 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
     bool explicit_batch = false;
     bind->alias = input.inputs[0].ToString();
     bind->sql = input.inputs[1].ToString();
-    bind->logged_sql = RedactPasswords(bind->sql, bind->secrets);
     for (auto &kv : input.named_parameters) {
 #ifdef FIREBIRD_DUCKDB_V2
         if (kv.second.IsNull()) {
@@ -264,7 +161,6 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
         }
     }
     CheckWritable(bind->attach, bind->alias);
-    CheckSessionStatement(bind->sql);
     if (!explicit_batch) {
         Value v;
         if (context.TryGetCurrentSetting("firebird_write_batch_size", v) && !v.IsNull()) {
@@ -362,16 +258,11 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     std::string write_mode = "row";
     const bool create_db = !bind.has_source && IsCreateDatabaseStatement(bind.sql);
     // A CREATE DATABASE statement carries a password: never log it.
-    RecordFirebirdWrite(context, create_db ? "CREATE DATABASE <statement not logged>" : bind.logged_sql, "execute", "",
+    RecordFirebirdWrite(context, create_db ? "CREATE DATABASE <statement not logged>" : bind.sql, "execute", "",
                         -1);
     auto obs = GetObservabilityState(context);
     const auto t0 = std::chrono::steady_clock::now();
     try {
-        // One write at a time on the DuckDB transaction's write connection:
-        // two calls in one statement (UNION ALL, ...) can run in parallel
-        // pipelines, and they wait for each other here. Held through the
-        // commit below.
-        auto writes = LockFirebirdWrites(context, *bind.attach.catalog);
         // Each branch frees its statement at its end, before the commit
         // below hands its connection back to the write pool (which may close it).
         if (create_db) {
@@ -494,29 +385,10 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                     fail(first + static_cast<int64_t>(res.failed_index) + 1, res.error);
                 }
             };
-            bool types_checked = false;
             while (true) {
                 auto chunk = source.Fetch();
                 if (!chunk || chunk->size() == 0) {
                     break;
-                }
-                if (!types_checked) {
-                    // The encoder reads each value as the type found at bind.
-                    // DuckDB doesn't bind a prepared statement again when a
-                    // table the source reads changes (it isn't a dependency
-                    // of this statement), so a column now of another type
-                    // would be misread (5 read as 0.05).
-                    const auto &now = chunk->GetTypes();
-                    for (idx_t c = 0; c < now.size() && c < bind.source_types.size(); ++c) {
-                        if (now[c] != bind.source_types[c]) {
-                            throw InvalidInputException(
-                                "%s: source column %llu was %s when the call was bound and is %s now; "
-                                "prepare the statement again.%s",
-                                kFunctionName, static_cast<unsigned long long>(c + 1),
-                                bind.source_types[c].ToString(), now[c].ToString(), kept());
-                        }
-                    }
-                    types_checked = true;
                 }
                 for (idx_t r = 0; r < chunk->size(); ++r) {
                     try {
@@ -544,25 +416,9 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                     }
                     if (bind.commit_every > 0 && added % bind.commit_every == 0) {
                         flush();
-                        // A failed commit keeps only what earlier boundaries
-                        // committed; once it succeeds, these rows are kept too,
-                        // even if the next write transaction fails to start.
-                        try {
-                            conn.CommitWrite();
-                        } catch (std::exception &ex) {
-                            throw InvalidInputException("%s: the commit after source row %lld failed: %s%s",
-                                                        kFunctionName, static_cast<long long>(added),
-                                                        ErrorData(ex).RawMessage(), kept());
-                        }
+                        conn.CommitWrite();
+                        conn.StartWriteTransaction(bind.lock_timeout_s);
                         committed = executions;
-                        try {
-                            conn.StartWriteTransaction(bind.lock_timeout_s);
-                        } catch (std::exception &ex) {
-                            throw InvalidInputException("%s: the write transaction after source row %lld "
-                                                        "could not start: %s%s",
-                                                        kFunctionName, static_cast<long long>(executions),
-                                                        ErrorData(ex).RawMessage(), kept());
-                        }
                     }
                 }
             }
@@ -584,15 +440,8 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         }
 #endif
     } catch (std::exception &ex) {
-        ErrorData error(ex);
-        if (!bind.secrets.empty()) {
-            error = ErrorData(error.Type(), RedactMessage(error.RawMessage(), bind));
-        }
         obs->SetWriteResult(write_mode, executions, -1);
-        obs->SetError(error.RawMessage());
-        if (!bind.secrets.empty()) {
-            error.Throw();
-        }
+        obs->SetError(ErrorData(ex).RawMessage());
         throw;
     }
     obs->SetWriteResult(write_mode, executions, rows_unknown ? -1 : rows_affected);

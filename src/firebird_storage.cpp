@@ -261,12 +261,9 @@ public:
         if (lookup_info.GetCatalogType() != CatalogType::TABLE_ENTRY) {
             return nullptr;
         }
+        EnsureTablesLoaded();
         auto key = ToUpper(lookup_info.GetEntryName());
-        // Load and look up under one hold of the lock: a ClearCache from
-        // another connection (a committed DDL, firebird_clear_cache) in
-        // between would empty the map and miss a table that exists.
         std::lock_guard<std::mutex> g(load_lock_);
-        EnsureTablesLoadedLocked();
         auto it = tables_.find(key);
         if (it == tables_.end()) return nullptr;
         return it->second.get();
@@ -287,8 +284,8 @@ public:
     // The loaded tables, copied under the lock (entries are never freed
     // while the catalog lives).
     std::vector<FirebirdTableEntry *> TableSnapshot() {
+        EnsureTablesLoaded();
         std::lock_guard<std::mutex> g(load_lock_);
-        EnsureTablesLoadedLocked();
         std::vector<FirebirdTableEntry *> out;
         out.reserve(tables_.size());
         for (auto &kv : tables_) {
@@ -411,8 +408,8 @@ private:
         return out;
     }
 
-    // The caller holds load_lock_.
-    void EnsureTablesLoadedLocked() {
+    void EnsureTablesLoaded() {
+        std::lock_guard<std::mutex> g(load_lock_);
         if (loaded_) return;
 
         // One connection covers all the schema-discovery queries; return
@@ -1019,23 +1016,6 @@ public:
         ddl_executed_ = true;
     }
 
-    // Held by each write while it uses the write connection (see
-    // LockFirebirdWrites).
-    std::mutex &WriteUseLock() {
-        return write_use_lock_;
-    }
-
-    // Open INSERTs with a statement on the write connection (see
-    // PinFirebirdWrites).
-    void PinWrites(int64_t delta) {
-        std::lock_guard<std::mutex> g(write_lock_);
-        write_pins_ += delta;
-    }
-    bool WritesPinned() {
-        std::lock_guard<std::mutex> g(write_lock_);
-        return write_pins_ > 0;
-    }
-
 
     // Transaction snapshot (opt-in, see GetFirebirdTransactionSnapshot).
     // The coordinating connection comes from the ATTACH's pool and holds a
@@ -1237,8 +1217,6 @@ private:
     FirebirdCatalog *catalog_ = nullptr;
     bool ddl_executed_ = false;  // a DDL statement ran in the write transaction
     std::mutex write_lock_;
-    std::mutex write_use_lock_;
-    int64_t write_pins_ = 0;
     std::unique_ptr<FirebirdConnection> write_conn_;
     std::string catalog_name_;
     std::shared_ptr<std::atomic<bool>> no_snapshot_numbers_;
@@ -1552,28 +1530,8 @@ FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &
     return tx.WriteConnection(lock_timeout_s);
 }
 
-std::unique_lock<std::mutex> LockFirebirdWrites(ClientContext &context, Catalog &catalog) {
-    auto &tx = Transaction::Get(context, catalog).Cast<FirebirdTransaction>();
-    return std::unique_lock<std::mutex>(tx.WriteUseLock());
-}
-
-void PinFirebirdWrites(ClientContext &context, Catalog &catalog) {
-    Transaction::Get(context, catalog).Cast<FirebirdTransaction>().PinWrites(1);
-}
-
-void UnpinFirebirdWrites(ClientContext &context, Catalog &catalog) {
-    Transaction::Get(context, catalog).Cast<FirebirdTransaction>().PinWrites(-1);
-}
-
 void CommitFirebirdWriteNow(ClientContext &context, Catalog &catalog) {
-    auto &tx = Transaction::Get(context, catalog).Cast<FirebirdTransaction>();
-    // An INSERT in this statement (fed by this firebird_execute) still has
-    // its statement prepared on the connection: the commit waits for the
-    // DuckDB transaction.
-    if (tx.WritesPinned()) {
-        return;
-    }
-    tx.EndWrite(true);
+    Transaction::Get(context, catalog).Cast<FirebirdTransaction>().EndWrite(true);
 }
 
 void NoteFirebirdDdl(ClientContext &context, Catalog &catalog) {

@@ -1,0 +1,22 @@
+# name: test/sql/proof_insert_pin.test
+# description: proof (fork only): INSERT fed by firebird_execute on the same ATTACH
+# group: [firebird]
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);
+
+query I
+INSERT INTO rw.main.RW_TARGET (ID)
+SELECT executions + 993000 FROM firebird_execute('rw', 'INSERT INTO RW_LOG (ID, NOTE) VALUES (-993, ''pinned'')');
+----
+1
+
+query II
+SELECT (SELECT count(*) FROM firebird_query('rw', 'SELECT ID FROM RW_TARGET WHERE ID = 993001')),
+       (SELECT count(*) FROM firebird_query('rw', 'SELECT ID FROM RW_LOG WHERE ID = -993'));
+----
+1	1

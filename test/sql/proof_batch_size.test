@@ -1,0 +1,15 @@
+# name: test/sql/proof_batch_size.test
+# description: proof (fork only): negative batch size refused at SET
+# group: [firebird]
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);
+
+statement error
+SET firebird_write_batch_size = -1;
+----
+firebird_write_batch_size must be >= 0

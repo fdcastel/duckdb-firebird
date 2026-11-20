@@ -38,7 +38,6 @@
 #define isc_dsql_free_statement      (::duckdb::fbapi().isc_dsql_free_statement)
 #define isc_open_blob2               (::duckdb::fbapi().isc_open_blob2)
 #define isc_close_blob               (::duckdb::fbapi().isc_close_blob)
-#define isc_cancel_blob              (::duckdb::fbapi().isc_cancel_blob)
 #define isc_get_segment              (::duckdb::fbapi().isc_get_segment)
 #define isc_sqlcode                  (::duckdb::fbapi().isc_sqlcode)
 #define fb_interpret                 (::duckdb::fbapi().fb_interpret)
@@ -936,15 +935,7 @@ void FirebirdConnection::CommitWrite() {
     CheckStatus(status, "isc_commit_transaction");
     tr_ = 0;
     in_write_ = false;
-    // The write is committed: failing to start the next read-only
-    // transaction must not turn it into a failed COMMIT (a client could
-    // write again). The connection is marked broken instead, so the pool
-    // drops it.
-    try {
-        StartReadOnlyTransaction();
-    } catch (...) {
-        broken_.store(true, std::memory_order_relaxed);
-    }
+    StartReadOnlyTransaction();
 }
 
 void FirebirdConnection::RollbackWrite() {
@@ -1390,10 +1381,8 @@ ISC_QUAD FirebirdConnection::CreateBlob(const std::string &bytes, int16_t subtyp
         const size_t len = std::min(kSegment, bytes.size() - pos);
         isc_put_segment(status, &blob, static_cast<unsigned short>(len), bytes.data() + pos);
         if (NoteStatus(status)) {
-            // Cancel, not close: a closed half-written BLOB would be a
-            // valid BLOB id holding part of the value.
             ISC_STATUS cancel_status[20] = {};
-            isc_cancel_blob(cancel_status, &blob);
+            isc_close_blob(cancel_status, &blob);
             CheckStatus(status, "isc_put_segment");
         }
     }

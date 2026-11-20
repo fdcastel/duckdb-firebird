@@ -1,7 +1,5 @@
 #pragma once
 
-#include <mutex>
-
 #include "duckdb.hpp"
 #include "duckdb/function/table_function.hpp"
 
@@ -30,22 +28,8 @@ struct FirebirdAttachHandle {
 FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &catalog,
                                                int64_t lock_timeout_s);
 
-// One write at a time on the current DuckDB transaction's write connection
-// on this ATTACH: hold the returned lock while using it. Two firebird_execute
-// calls in one statement can run in parallel pipelines; they wait for each
-// other (one DuckDB transaction is one Firebird transaction, so a second
-// connection would not see the first call's rows nor share its locks).
-std::unique_lock<std::mutex> LockFirebirdWrites(ClientContext &context, Catalog &catalog);
-
-// An INSERT keeps a statement prepared on the write connection from its
-// first step to its last. While one is open, CommitFirebirdWriteNow does
-// nothing, and the write commits with the DuckDB transaction.
-void PinFirebirdWrites(ClientContext &context, Catalog &catalog);
-void UnpinFirebirdWrites(ClientContext &context, Catalog &catalog);
-
 // Commits the current DuckDB transaction's Firebird write transaction on
-// this ATTACH now, if one was started (a later write starts a new one), and
-// unless an INSERT has it pinned (see PinFirebirdWrites).
+// this ATTACH now, if one was started (a later write starts a new one).
 void CommitFirebirdWriteNow(ClientContext &context, Catalog &catalog);
 
 // firebird_execute ran a DDL statement in the current DuckDB transaction:
@@ -64,9 +48,8 @@ void ReleaseFirebirdIdleConnections(Catalog &catalog);
 // firebird_clear_cache(alias)
 TableFunction GetFirebirdClearCacheFunction();
 
-// firebird_execute(alias, sql): runs one statement in the DuckDB transaction's
-// Firebird write transaction (ATTACH ... READ_WRITE); the rows of a statement
-// that returns rows are read and discarded.
+// firebird_execute(alias, sql): runs one statement that returns no rows in
+// the DuckDB transaction's Firebird write transaction (ATTACH ... READ_WRITE).
 TableFunction GetFirebirdExecuteFunction();
 
 // Resolves `alias` to a Firebird ATTACH (BinderException naming

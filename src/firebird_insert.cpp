@@ -90,11 +90,6 @@ public:
             lock_timeout_s = v.GetValue<int64_t>();
         }
         auto state = make_uniq<FirebirdInsertGlobalState>();
-        // One write at a time on the transaction's write connection (a
-        // firebird_execute in the source shares it), and the connection
-        // stays this transaction's until the INSERT ends (Finalize unpins).
-        auto writes = LockFirebirdWrites(context, catalog_);
-        PinFirebirdWrites(context, catalog_);
         auto &conn = GetFirebirdWriteConnection(context, catalog_, lock_timeout_s);
         state->connection_id = conn.Id();
         try {
@@ -126,7 +121,6 @@ public:
 
     SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override {
         auto &state = input.global_state.Cast<FirebirdInsertGlobalState>();
-        auto writes = LockFirebirdWrites(context.client, catalog_);
         const auto t0 = std::chrono::steady_clock::now();
         for (idx_t r = 0; r < chunk.size(); ++r) {
             try {
@@ -159,11 +153,9 @@ public:
     SinkFinalizeType Finalize(Pipeline &, Event &, ClientContext &context,
                               OperatorSinkFinalizeInput &input) const override {
         auto &state = input.global_state.Cast<FirebirdInsertGlobalState>();
-        auto writes = LockFirebirdWrites(context, catalog_);
         const auto t0 = std::chrono::steady_clock::now();
         Flush(context, state, t0);
         AddTime(state, t0);
-        UnpinFirebirdWrites(context, catalog_);
         Report(context, state, "");
         return SinkFinalizeType::READY;
     }

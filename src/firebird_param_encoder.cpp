@@ -146,15 +146,9 @@ void FirebirdParamEncoder::Setup(Slot &slot) {
         // text the per-row mode stores: 1.5, not 1.5000000000.
         slot.wire = Wire::TEXT;
         slot.wide_text = true;
-    } else if (slot.wire == Wire::WIDE && !target_text &&
-               (fixed_layout_ || stmt_.Connection().EngineMajor() >= 4)) {
-        // INT128 with the DECIMAL's own scale: one layout for every row
-        // (batches), and one row at a time on Firebird 4+, where the server
-        // rounds it to the target as it does the literal. WIDE would send a
-        // value whose digits don't fit in 64 bits as text, and the server
-        // overflows converting text with more digits than the target holds
-        // (1.12345678901234567891 into NUMERIC(18,4)). Firebird 3 has no
-        // INT128 and refuses that literal too.
+    } else if (fixed_layout_ && slot.wire == Wire::WIDE) {
+        // One layout for every row (batches, Firebird 4+): INT128 holds any
+        // value WIDE would send, with the DECIMAL's own scale.
         slot.wire = Wire::INT128;
         slot.sqlscale = src.id() == LogicalTypeId::DECIMAL
                             ? static_cast<int16_t>(-DecimalType::GetScale(src))
@@ -280,18 +274,6 @@ std::string FirebirdParamEncoder::TextBytes(idx_t index, const Slot &slot, const
     return text;
 }
 
-// Firebird's dates run from 0001-01-01 to 9999-12-31; DuckDB's go further
-// (BC dates, years past 9999), and the raw ISC_DATE of those is not a date
-// Firebird can hold.
-static void CheckFirebirdDate(idx_t index, date_t d) {
-    static const date_t kMin = Date::FromDate(1, 1, 1);
-    static const date_t kMax = Date::FromDate(9999, 12, 31);
-    if (d < kMin || d > kMax) {
-        throw InvalidInputException("parameter %llu: %s is outside Firebird's dates (0001-01-01 to 9999-12-31)",
-                                    static_cast<unsigned long long>(index + 1), Date::ToString(d));
-    }
-}
-
 void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &value) {
     XSQLVAR &x = stmt_.InputSqlda()->sqlvar[index];
     // Every field, every row: nothing from the previous row survives.
@@ -378,7 +360,6 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
             throw InvalidInputException("parameter %llu: infinite dates can't be sent to Firebird",
                                         static_cast<unsigned long long>(index + 1));
         }
-        CheckFirebirdDate(index, d);
         const ISC_DATE fb = static_cast<ISC_DATE>(d.days + kMjdToUnixDays);
         Put(slot.buffer, fb);
         break;
@@ -392,11 +373,6 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
             micros = ((micros % kDay) + kDay) % kDay;
         } else {
             micros = TimeMicros(value.GetValue<dtime_t>());
-            if (micros >= 86400LL * 1000000LL) {
-                throw InvalidInputException("parameter %llu: TIME '24:00:00' is outside Firebird's times "
-                                            "(00:00:00 to 23:59:59.9999)",
-                                            static_cast<unsigned long long>(index + 1));
-            }
         }
         // Firebird keeps 1/10000 s: sub-100-microsecond digits are dropped.
         const ISC_TIME fb = static_cast<ISC_TIME>(micros / 100);
@@ -422,7 +398,6 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
         date_t d;
         dtime_t t;
         Timestamp::Convert(ts, d, t);
-        CheckFirebirdDate(index, d);
         const ISC_DATE fb_date = static_cast<ISC_DATE>(d.days + kMjdToUnixDays);
         const ISC_TIME fb_time = static_cast<ISC_TIME>(TimeMicros(t) / 100);
         Put(slot.buffer, fb_date, 0);

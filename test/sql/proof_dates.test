@@ -1,0 +1,16 @@
+# name: test/sql/proof_dates.test
+# description: proof (fork only): dates outside Firebird's range refused
+# group: [firebird]
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);
+
+statement error
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_DATE) VALUES (?, ?)',
+    source := 'SELECT 991, make_date(10000, 1, 1)');
+----
+is outside Firebird's dates (0001-01-01 to 9999-12-31)

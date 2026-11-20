@@ -29,7 +29,6 @@ struct FirebirdClientApi {
     decltype(&::isc_dsql_free_statement)     isc_dsql_free_statement;
     decltype(&::isc_open_blob2)              isc_open_blob2;
     decltype(&::isc_close_blob)              isc_close_blob;
-    decltype(&::isc_cancel_blob)             isc_cancel_blob;
     decltype(&::isc_get_segment)             isc_get_segment;
     decltype(&::isc_sqlcode)                 isc_sqlcode;
     decltype(&::fb_interpret)                fb_interpret;
