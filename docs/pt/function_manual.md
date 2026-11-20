@@ -801,14 +801,18 @@ Retorna uma linha:
   Suas linhas sao lidas em stream, um chunk (2.048 linhas) por vez, e o
   DuckDB calcula so um ou dois chunks a frente das gravacoes. Entao a
   memoria fica pequena, e se a query falha no meio, as linhas que
-  `commit_every` confirmou antes da falha ficam (o erro diz quais).
+  `commit_every` confirmou antes da falha ficam (o erro diz quais). Os
+  tipos das colunas sao conferidos quando a chamada roda: se outra conexao
+  os mudou depois do bind, a chamada falha antes de gravar.
 - **Valores exatos.** Cada valor viaja num tipo Firebird que o representa
   exatamente, e o servidor o converte para o tipo do parametro com suas
   proprias regras: arredondamento, overflow e truncamento sao os mesmos
   do literal no texto SQL. Inteiros vao como BIGINT, um `DECIMAL(p,s)`
   como BIGINT com escala s (1.5 entra num `NUMERIC(9,3)` como 1.500), um
-  valor de 128 bits como `INT128` (Firebird 4+) ou BIGINT escalado ou
-  texto; FLOAT, DOUBLE, BOOLEAN, DATE, TIME e TIMESTAMP nos proprios
+  valor de 128 bits, ou um DECIMAL cujos digitos nao cabem em 64 bits,
+  como `INT128` com sua escala no Firebird 4+ (no Firebird 3, como texto,
+  que falha acima de 18 digitos como o mesmo literal); FLOAT, DOUBLE,
+  BOOLEAN, DATE, TIME e TIMESTAMP nos proprios
   tipos; fusos horarios como UTC (o Firebird guarda 1/10000 s), entao um
   `TIMESTAMPTZ` gravado numa coluna sem fuso fica com a hora UTC (converta
   na origem, `ts AT TIME ZONE '...'`, para a hora local). Texto, e
@@ -817,7 +821,9 @@ Retorna uma linha:
   maior que o parametro, ou um caractere que a codificacao nao comporta, e
   erro, nunca truncamento silencioso. Valores para parametros BLOB viram
   BLOBs de qualquer tamanho. Cada linha define todos os parametros de
-  novo, entao um valor depois de um NULL nunca e enviado como NULL.
+  novo, entao um valor depois de um NULL nunca e enviado como NULL. Datas
+  fora de 0001-01-01 a 9999-12-31 (datas AC, anos depois de 9999) e
+  `TIME '24:00:00'` sao erro: o Firebird nao as guarda.
 - **`commit_every := N`** confirma a cada N linhas; essas linhas ficam
   confirmadas se uma linha seguinte falhar. 0 (padrao) confirma com a
   transacao DuckDB. Exige autocommit: dentro de `BEGIN ... COMMIT` a

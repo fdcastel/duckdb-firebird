@@ -38,6 +38,7 @@
 #define isc_dsql_free_statement      (::duckdb::fbapi().isc_dsql_free_statement)
 #define isc_open_blob2               (::duckdb::fbapi().isc_open_blob2)
 #define isc_close_blob               (::duckdb::fbapi().isc_close_blob)
+#define isc_cancel_blob              (::duckdb::fbapi().isc_cancel_blob)
 #define isc_get_segment              (::duckdb::fbapi().isc_get_segment)
 #define isc_sqlcode                  (::duckdb::fbapi().isc_sqlcode)
 #define fb_interpret                 (::duckdb::fbapi().fb_interpret)
@@ -956,6 +957,21 @@ void FirebirdConnection::RollbackWrite() {
     StartReadOnlyTransaction();
 }
 
+int FirebirdConnection::EngineMajor() {
+    if (engine_major_ < 0) {
+        engine_major_ = 0;
+        try {
+            auto cur = OpenCursor("SELECT RDB$GET_CONTEXT('SYSTEM', 'ENGINE_VERSION') FROM RDB$DATABASE");
+            if (cur->Fetch() && !cur->IsNull(0)) {
+                engine_major_ = std::atoi(cur->GetText(0).c_str());
+            }
+        } catch (...) {
+            engine_major_ = 0;
+        }
+    }
+    return engine_major_;
+}
+
 std::unique_ptr<FirebirdStatement> FirebirdConnection::OpenCursor(const std::string &sql) {
     return make_uniq<FirebirdStatement>(*this, sql);
 }
@@ -1323,8 +1339,10 @@ ISC_QUAD FirebirdConnection::CreateBlob(const std::string &bytes, int16_t subtyp
         const size_t len = std::min(kSegment, bytes.size() - pos);
         isc_put_segment(status, &blob, static_cast<unsigned short>(len), bytes.data() + pos);
         if (NoteStatus(status)) {
+            // Cancel, not close: a closed half-written BLOB would be a
+            // valid BLOB id holding part of the value.
             ISC_STATUS cancel_status[20] = {};
-            isc_close_blob(cancel_status, &blob);
+            isc_cancel_blob(cancel_status, &blob);
             CheckStatus(status, "isc_put_segment");
         }
     }

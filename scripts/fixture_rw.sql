@@ -9,6 +9,7 @@
  *              depend on isql's connection character set.
  *   RW_TARGET: the same columns as RW_TYPES, empty: parameter round trips.
  *   CUSTOMER : an upsert target (EXECUTE BLOCK ... UPDATE OR INSERT).
+ *   RW_CS1252: WIN1252 VARCHAR and text BLOB in the UTF8 database.
  *   SP_SEQ   : selectable procedure returning N rows.
  *   RW_LOG / SP_WRITE: a log table, and a selectable procedure that writes.
  */
@@ -81,6 +82,14 @@ CREATE TABLE CUSTOMER (
     ID   INTEGER NOT NULL PRIMARY KEY,
     NAME VARCHAR(40),
     CITY VARCHAR(30)
+);
+
+/* WIN1252 columns in this UTF8 database: values are stored as WIN1252 bytes
+ * ('Ação' is 4 bytes, not 6). */
+CREATE TABLE RW_CS1252 (
+    ID INTEGER NOT NULL PRIMARY KEY,
+    V  VARCHAR(10) CHARACTER SET WIN1252,
+    B  BLOB SUB_TYPE TEXT CHARACTER SET WIN1252
 );
 
 CREATE TABLE RW_LOG (

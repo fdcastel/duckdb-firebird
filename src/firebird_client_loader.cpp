@@ -108,6 +108,7 @@ static void BindSymbols(FirebirdClientApi &api,
     BIND(isc_dsql_free_statement);
     BIND(isc_open_blob2);
     BIND(isc_close_blob);
+    BIND(isc_cancel_blob);
     BIND(isc_get_segment);
     BIND(isc_sqlcode);
     BIND(fb_interpret);

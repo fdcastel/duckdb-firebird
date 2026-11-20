@@ -428,10 +428,29 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                 throw InvalidInputException("%s: source row %lld failed: %s%s", kFunctionName,
                                             static_cast<long long>(row), message, kept());
             };
+            bool types_checked = false;
             while (true) {
                 auto chunk = source.Fetch();
                 if (!chunk || chunk->size() == 0) {
                     break;
+                }
+                if (!types_checked) {
+                    // The encoder reads each value as the type found at bind.
+                    // DuckDB doesn't bind a prepared statement again when a
+                    // table the source reads changes (it isn't a dependency
+                    // of this statement), so a column now of another type
+                    // would be misread (5 read as 0.05).
+                    const auto &now = chunk->GetTypes();
+                    for (idx_t c = 0; c < now.size() && c < bind.source_types.size(); ++c) {
+                        if (now[c] != bind.source_types[c]) {
+                            throw InvalidInputException(
+                                "%s: source column %llu was %s when the call was bound and is %s now; "
+                                "prepare the statement again.%s",
+                                kFunctionName, static_cast<unsigned long long>(c + 1),
+                                bind.source_types[c].ToString(), now[c].ToString(), kept());
+                        }
+                    }
+                    types_checked = true;
                 }
                 for (idx_t r = 0; r < chunk->size(); ++r) {
                     try {
@@ -445,9 +464,25 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                     }
                     ++executions;
                     if (bind.commit_every > 0 && executions % bind.commit_every == 0) {
-                        conn.CommitWrite();
-                        conn.StartWriteTransaction(bind.lock_timeout_s);
+                        // A failed commit keeps only what earlier boundaries
+                        // committed; once it succeeds, these rows are kept too,
+                        // even if the next write transaction fails to start.
+                        try {
+                            conn.CommitWrite();
+                        } catch (std::exception &ex) {
+                            throw InvalidInputException("%s: the commit after source row %lld failed: %s%s",
+                                                        kFunctionName, static_cast<long long>(executions),
+                                                        ErrorData(ex).RawMessage(), kept());
+                        }
                         committed = executions;
+                        try {
+                            conn.StartWriteTransaction(bind.lock_timeout_s);
+                        } catch (std::exception &ex) {
+                            throw InvalidInputException("%s: the write transaction after source row %lld "
+                                                        "could not start: %s%s",
+                                                        kFunctionName, static_cast<long long>(executions),
+                                                        ErrorData(ex).RawMessage(), kept());
+                        }
                     }
                 }
             }

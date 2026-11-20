@@ -550,13 +550,17 @@ Returns one row:
   rows are read as a stream, a chunk (2,048 rows) at a time, and DuckDB
   computes only a chunk or two ahead of the writes. So memory stays
   small, and if the query fails half-way, the rows `commit_every`
-  committed before the failure stay (the error says which).
+  committed before the failure stay (the error says which). Its column
+  types are checked when the call runs: if another connection changed them
+  since the bind, the call fails before writing.
 - **Exact values.** Each value travels in a Firebird type that represents
   it exactly, and the server converts it to the parameter's type with its
   own rules, so rounding, overflow and truncation are what the same
   literal in the SQL text gets. Integers go as BIGINT, a `DECIMAL(p,s)`
   as a BIGINT with scale s (1.5 lands in a `NUMERIC(9,3)` as 1.500), a
-  128-bit value as `INT128` (Firebird 4+) or a scaled BIGINT or text;
+  128-bit value, or a DECIMAL whose digits don't fit in 64 bits, as
+  `INT128` with its scale on Firebird 4+ (on Firebird 3, as text, which
+  fails past 18 digits like the same literal);
   FLOAT, DOUBLE, BOOLEAN, DATE, TIME and TIMESTAMP in their own types;
   time zones as UTC (Firebird keeps 1/10000 s), so a `TIMESTAMPTZ` stored
   in a column without a time zone keeps its UTC time (cast it in the
@@ -566,7 +570,9 @@ Returns one row:
   the parameter, or a character its encoding can't hold, is an error,
   never silent truncation. Values for BLOB parameters become BLOBs of any
   size. Every row sets every parameter again, so a value after a NULL is
-  never sent as NULL.
+  never sent as NULL. Dates outside 0001-01-01 to 9999-12-31 (BC dates,
+  years past 9999) and `TIME '24:00:00'` are an error: Firebird can't
+  hold them.
 - **`commit_every := N`** commits every N rows; those rows stay committed
   if a later row fails. 0 (default) commits with the DuckDB transaction.
   It needs autocommit: inside `BEGIN ... COMMIT` the call fails, because

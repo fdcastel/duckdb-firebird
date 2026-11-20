@@ -497,6 +497,10 @@ public:
     void RollbackWrite();
     bool InWriteTransaction() const { return in_write_; }
 
+    // Major version of the server's engine (RDB$GET_CONTEXT ENGINE_VERSION),
+    // read once; 0 when it can't be read.
+    int EngineMajor();
+
     // Creates a BLOB holding `bytes` in the current transaction and returns
     // its id, to pass as a parameter value. `subtype` and `charset` are the
     // target's (charset only matters for a text BLOB, subtype 1).
@@ -536,6 +540,7 @@ private:
     int64_t id_ = 0;
     bool in_snapshot_ = false;
     bool in_write_ = false;
+    int engine_major_ = -1;
     std::atomic<bool> broken_{false};
 
     void Attach();

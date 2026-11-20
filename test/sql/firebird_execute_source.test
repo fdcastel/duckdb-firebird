@@ -391,3 +391,106 @@ query I
 SELECT count(*) FROM firebird_query('rw', 'SELECT ID FROM RW_TARGET');
 ----
 0
+
+# --- WIN1252 columns in a UTF8 database ------------------------------------------
+# A parameter is transliterated like the literal: 4 WIN1252 bytes, equal to
+# the literal on the server, in the VARCHAR and in the text BLOB.
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_CS1252 (ID, V, B) VALUES (1, ''Ação'', ''Ação'')');
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_CS1252 (ID, V, B) VALUES (?, ?, ?)',
+    source := $$SELECT 2, 'Ação', 'Ação'$$);
+
+query IIIIII
+SELECT * FROM firebird_query('rw', $$SELECT ID, OCTET_LENGTH(V), OCTET_LENGTH(B), IIF(V = 'Ação', 1, 0),
+    IIF(CAST(B AS VARCHAR(20) CHARACTER SET WIN1252) = 'Ação', 1, 0), V FROM RW_CS1252 ORDER BY ID$$);
+----
+1	4	4	1	1	Ação
+2	4	4	1	1	Ação
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_CS1252');
+
+# --- A prepared call whose source table changes type -----------------------------
+# The call writes to the ATTACH, which reports no catalog version, so DuckDB
+# binds the prepared statement again on every execution: the source is read
+# with its new types (5 stays 5, not 0.05). A change made by another
+# connection between the bind and the execution of one statement is caught by
+# the types check when the call runs, before any write (not reproducible here).
+
+statement ok
+CREATE TABLE src_types (id INTEGER, v DECIMAL(9,2));
+
+statement ok
+INSERT INTO src_types VALUES (90, 5);
+
+statement ok
+PREPARE p_src AS SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_NUM9_3) VALUES (?, ?)',
+    source := 'SELECT id, v FROM src_types');
+
+statement ok
+ALTER TABLE src_types ALTER v TYPE INTEGER;
+
+statement ok
+EXECUTE p_src;
+
+query II
+SELECT * FROM firebird_query('rw', 'SELECT ID, C_NUM9_3 FROM RW_TARGET WHERE ID = 90');
+----
+90	5.000
+
+statement ok
+DEALLOCATE p_src;
+
+statement ok
+DROP TABLE src_types;
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_TARGET');
+
+# --- Dates and times outside Firebird's range: an error, nothing written ----------
+
+statement error
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_DATE) VALUES (?, ?)',
+    source := 'SELECT 91, make_date(10000, 1, 1)');
+----
+is outside Firebird's dates (0001-01-01 to 9999-12-31)
+
+statement error
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_DATE) VALUES (?, ?)',
+    source := $$SELECT 92, DATE '0044-03-15 (BC)'$$);
+----
+is outside Firebird's dates (0001-01-01 to 9999-12-31)
+
+statement error
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_TS) VALUES (?, ?)',
+    source := 'SELECT 93, make_timestamp(10000, 1, 1, 0, 0, 0)');
+----
+is outside Firebird's dates (0001-01-01 to 9999-12-31)
+
+statement error
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_TIME) VALUES (?, ?)',
+    source := $$SELECT 94, TIME '24:00:00'$$);
+----
+TIME '24:00:00' is outside Firebird's times
+
+query I
+SELECT count(*) FROM firebird_query('rw', 'SELECT ID FROM RW_TARGET');
+----
+0
+
+# The limits themselves are Firebird dates.
+statement ok
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_DATE) VALUES (?, ?)',
+    source := $$SELECT * FROM (VALUES (95, DATE '0001-01-01'), (96, DATE '9999-12-31')) t$$);
+
+query II
+SELECT * FROM firebird_query('rw', 'SELECT ID, C_DATE FROM RW_TARGET ORDER BY ID');
+----
+95	0001-01-01
+96	9999-12-31
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_TARGET');
