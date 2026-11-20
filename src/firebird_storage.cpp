@@ -856,7 +856,7 @@ public:
             "DROP SCHEMA is not supported on a Firebird-attached catalog.");
     }
 
-    // -- planner hooks: INSERT writes (READ_WRITE); the others throw ---------
+    // -- planner hooks: read-only → all throw --------------------------------
     PhysicalOperator &PlanCreateTableAs(ClientContext &, PhysicalPlanGenerator &,
                                         LogicalCreateTable &, PhysicalOperator &) override {
         throw NotImplementedException("CTAS not supported on Firebird catalog");
@@ -867,17 +867,15 @@ public:
     }
     PhysicalOperator &PlanDelete(ClientContext &, PhysicalPlanGenerator &,
                                  LogicalDelete &, PhysicalOperator &) override {
-        throw NotImplementedException("DELETE not supported on Firebird catalog; use firebird_execute()");
+        throw NotImplementedException("DELETE not supported on Firebird catalog");
     }
     PhysicalOperator &PlanUpdate(ClientContext &, PhysicalPlanGenerator &,
                                  LogicalUpdate &, PhysicalOperator &) override {
-        throw NotImplementedException("UPDATE not supported on Firebird catalog; use firebird_execute()");
+        throw NotImplementedException("UPDATE not supported on Firebird catalog");
     }
     PhysicalOperator &PlanMergeInto(ClientContext &, PhysicalPlanGenerator &,
                                     LogicalMergeInto &, PhysicalOperator &) override {
-        throw NotImplementedException("MERGE (and ON CONFLICT, INSERT OR REPLACE) not supported on Firebird "
-                                      "catalog; for an upsert use firebird_execute() with UPDATE OR INSERT ... "
-                                      "MATCHING");
+        throw NotImplementedException("MERGE not supported on Firebird catalog");
     }
     unique_ptr<LogicalOperator> BindCreateIndex(Binder &, CreateStatement &,
                                                 TableCatalogEntry &,

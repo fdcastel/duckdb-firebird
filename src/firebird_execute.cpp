@@ -133,11 +133,8 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
         } else if (kv.first == "count_rows") {
             bind->count_rows = kv.second.IsNull() || kv.second.GetValue<bool>();
         } else if (kv.first == "batch_size") {
-            // NULL = not given (DuckDB 2.0 drops NULL named parameters itself).
-            if (!kv.second.IsNull()) {
-                bind->batch_size = kv.second.GetValue<int64_t>();
-                explicit_batch = true;
-            }
+            bind->batch_size = kv.second.GetValue<int64_t>();
+            explicit_batch = true;
         }
     }
     bind->attach = GetFirebirdAttachHandle(context, bind->alias, kFunctionName);
@@ -236,15 +233,6 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     }
     state.done = true;
 
-    // commit_every commits the transaction's write connection, so inside
-    // BEGIN ... COMMIT it would also commit the earlier writes of the DuckDB
-    // transaction, which a ROLLBACK could then no longer undo.
-    if (bind.commit_every > 0 && !context.transaction.IsAutoCommit()) {
-        throw InvalidInputException("%s: commit_every needs autocommit; inside BEGIN ... COMMIT its commits would "
-                                    "also commit the transaction's earlier writes",
-                                    kFunctionName);
-    }
-
     // A DuckDB transaction writes to one attached database at most; this
     // also makes a READ ONLY DuckDB transaction refuse the write.
     auto &db = bind.attach.catalog->GetAttached();
@@ -263,181 +251,169 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     auto obs = GetObservabilityState(context);
     const auto t0 = std::chrono::steady_clock::now();
     try {
-        // Each branch frees its statement at its end, before the commit
-        // below hands its connection back to the write pool (which may close it).
-        if (create_db) {
-            // Creates another database; this ATTACH's transaction is not involved.
-            FirebirdCreateDatabase(bind.sql, bind.attach.dialect);
-            executions = 1;
-        } else if (!bind.has_source) {
-            auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
-            FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
-            const bool returns_rows = CheckStatementType(stmt, true);
-            const bool is_ddl = stmt.StatementType() == isc_info_sql_stmt_ddl;
+    if (create_db) {
+        // Creates another database; this ATTACH's transaction is not involved.
+        FirebirdCreateDatabase(bind.sql, bind.attach.dialect);
+        executions = 1;
+    } else if (!bind.has_source) {
+        auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
+        FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
+        const bool returns_rows = CheckStatementType(stmt, true);
+        const bool is_ddl = stmt.StatementType() == isc_info_sql_stmt_ddl;
+        if (is_ddl) {
+            // Idle connections of this ATTACH would hold the tables they
+            // used ("object ... is in use" on DROP / ALTER).
+            ReleaseFirebirdIdleConnections(*bind.attach.catalog);
+        }
+        const auto params = stmt.DescribeInput().size();
+        if (params > 0) {
+            throw InvalidInputException("%s: the statement has %llu parameter(s) (?); pass their values with "
+                                        "source := '<query>'",
+                                        kFunctionName, static_cast<unsigned long long>(params));
+        }
+        if (returns_rows) {
+            stmt.ExecuteCursor(bind.sql);
+            while (stmt.Fetch()) {
+            }
+            rows_unknown = true;
+        } else {
+            stmt.ExecuteNoCursor(bind.sql);
+            if (bind.count_rows) {
+                rows_affected = stmt.RecordsAffected();
+            }
             if (is_ddl) {
-                // Idle connections of this ATTACH would hold the tables they
-                // used ("object ... is in use" on DROP / ALTER).
-                ReleaseFirebirdIdleConnections(*bind.attach.catalog);
+                // The ATTACH reloads its tables once this commits.
+                NoteFirebirdDdl(context, *bind.attach.catalog);
             }
-            const auto params = stmt.DescribeInput().size();
-            if (params > 0) {
-                throw InvalidInputException("%s: the statement has %llu parameter(s) (?); pass their values with "
-                                            "source := '<query>'",
-                                            kFunctionName, static_cast<unsigned long long>(params));
+        }
+        executions = 1;
+    } else {
+        auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
+        FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
+        CheckStatementType(stmt, false);
+        const int statement_type = stmt.StatementType();
+        // Firebird 4+ batches when asked and possible; otherwise per row.
+        std::unique_ptr<FirebirdParamEncoder> encoder;
+        std::unique_ptr<FirebirdBatchWriter> batch;
+        if (bind.batch_size > 0) {
+            encoder = make_uniq<FirebirdParamEncoder>(stmt, bind.source_types, bind.attach.none_encoding, true);
+            std::string why;
+            batch = FirebirdBatchWriter::TryCreate(conn, stmt, *encoder, statement_type, bind.count_rows, &why);
+            if (!batch) {
+                encoder.reset();
             }
-            if (returns_rows) {
-                stmt.ExecuteCursor(bind.sql);
-                while (stmt.Fetch()) {
-                }
+        }
+        if (!encoder) {
+            encoder = make_uniq<FirebirdParamEncoder>(stmt, bind.source_types, bind.attach.none_encoding);
+        }
+        write_mode = batch ? "batch" : "row";
+
+        // The source is read as a stream, a chunk at a time: its connection
+        // buffers a chunk or two ahead of the writes (DuckDB's default read-ahead is
+        // about 1 MB on 1.5 and 10 MB on 2.0, often 100,000 rows). Writing to
+        // Firebird is the slow side, so a longer read-ahead gains nothing; it
+        // would only hold more memory, and a source that fails within it
+        // would fail before the rows ahead of the failure are written.
+        Connection con(*context.db);
+#ifdef FIREBIRD_DUCKDB_V2
+        auto read_ahead = con.Query("SET max_streaming_buffer_size = '1KB'");
+#else
+        auto read_ahead = con.Query("SET streaming_buffer_size = '1KB'");
+#endif
+        if (read_ahead->HasError()) {
+            throw InternalException("%s: could not limit the source's read-ahead: %s", kFunctionName,
+                                    read_ahead->GetError());
+        }
+#ifdef FIREBIRD_DUCKDB_V2
+        auto submitted = con.Submit(bind.source);
+        if (submitted->HasError()) {
+            throw InvalidInputException("%s: the source query failed: %s", kFunctionName, submitted->GetError());
+        }
+        QueryResultStream<> source(std::move(submitted));
+#else
+        auto result = con.SendQuery(bind.source);
+        if (result->HasError()) {
+            throw InvalidInputException("%s: the source query failed: %s", kFunctionName, result->GetError());
+        }
+        auto &source = *result;
+#endif
+        int64_t committed = 0;
+        int64_t added = 0;  // rows encoded (= executions in the per-row mode)
+        auto kept = [&]() -> std::string {
+            return committed > 0 ? " Source rows 1 to " + std::to_string(committed) +
+                                       " were committed (commit_every); the later ones are rolled back."
+                                 : " Nothing of this call is kept: the transaction is rolled back.";
+        };
+        auto fail = [&](int64_t row, const std::string &message) {
+            throw InvalidInputException("%s: source row %lld failed: %s%s", kFunctionName,
+                                        static_cast<long long>(row), message, kept());
+        };
+        // Sends the pending batch; its rows count as executions.
+        auto flush = [&]() {
+            if (!batch || batch->Pending() == 0) {
+                return;
+            }
+            const int64_t first = executions;
+            auto res = batch->Execute();
+            executions += static_cast<int64_t>(res.executed);
+            if (res.affected < 0) {
                 rows_unknown = true;
             } else {
-                stmt.ExecuteNoCursor(bind.sql);
-                if (bind.count_rows) {
-                    rows_affected = stmt.RecordsAffected();
-                }
-                if (is_ddl) {
-                    // The ATTACH reloads its tables once this commits.
-                    NoteFirebirdDdl(context, *bind.attach.catalog);
-                }
+                rows_affected += res.affected;
             }
-            executions = 1;
-        } else {
-            auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
-            FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
-            CheckStatementType(stmt, false);
-            const int statement_type = stmt.StatementType();
-            // Firebird 4+ batches when asked and possible; otherwise per row.
-            std::unique_ptr<FirebirdParamEncoder> encoder;
-            std::unique_ptr<FirebirdBatchWriter> batch;
-            if (bind.batch_size > 0) {
-                encoder = make_uniq<FirebirdParamEncoder>(stmt, bind.source_types, bind.attach.none_encoding, true);
-                std::string why;
-                batch = FirebirdBatchWriter::TryCreate(conn, stmt, *encoder, statement_type, bind.count_rows, &why);
-                if (!batch) {
-                    encoder.reset();
-                }
+            if (res.failed) {
+                fail(first + static_cast<int64_t>(res.failed_index) + 1, res.error);
             }
-            if (!encoder) {
-                encoder = make_uniq<FirebirdParamEncoder>(stmt, bind.source_types, bind.attach.none_encoding);
+        };
+        while (true) {
+            auto chunk = source.Fetch();
+            if (!chunk || chunk->size() == 0) {
+                break;
             }
-            write_mode = batch ? "batch" : "row";
-
-            // The source is read as a stream, a chunk at a time: its connection
-            // buffers a chunk or two ahead of the writes (DuckDB's default read-ahead is
-            // about 1 MB on 1.5 and 10 MB on 2.0, often 100,000 rows). Writing to
-            // Firebird is the slow side, so a longer read-ahead gains nothing; it
-            // would only hold more memory, and a source that fails within it
-            // would fail before the rows ahead of the failure are written.
-            Connection con(*context.db);
-#ifdef FIREBIRD_DUCKDB_V2
-            auto read_ahead = con.Query("SET max_streaming_buffer_size = '1KB'");
-#else
-            auto read_ahead = con.Query("SET streaming_buffer_size = '1KB'");
-#endif
-            if (read_ahead->HasError()) {
-                throw InternalException("%s: could not limit the source's read-ahead: %s", kFunctionName,
-                                        read_ahead->GetError());
-            }
-#ifdef FIREBIRD_DUCKDB_V2
-            auto submitted = con.Submit(bind.source);
-            if (submitted->HasError()) {
-                throw InvalidInputException("%s: the source query failed: %s", kFunctionName, submitted->GetError());
-            }
-            QueryResultStream<> source(std::move(submitted));
-#else
-            auto result = con.SendQuery(bind.source);
-            if (result->HasError()) {
-                throw InvalidInputException("%s: the source query failed: %s", kFunctionName, result->GetError());
-            }
-            auto &source = *result;
-#endif
-            int64_t committed = 0;
-            int64_t added = 0;  // rows encoded (= executions in the per-row mode)
-            auto kept = [&]() -> std::string {
-                return committed > 0 ? " Source rows 1 to " + std::to_string(committed) +
-                                           " were committed (commit_every); the later ones are rolled back."
-                                     : " Nothing of this call is kept: the transaction is rolled back.";
-            };
-            auto fail = [&](int64_t row, const std::string &message) {
-                throw InvalidInputException("%s: source row %lld failed: %s%s", kFunctionName,
-                                            static_cast<long long>(row), message, kept());
-            };
-            // Sends the pending batch; its rows count as executions.
-            auto flush = [&]() {
-                if (!batch || batch->Pending() == 0) {
-                    return;
-                }
-                const int64_t first = executions;
-                auto res = batch->Execute();
-                executions += static_cast<int64_t>(res.executed);
-                if (res.affected < 0) {
-                    rows_unknown = true;
-                } else {
-                    rows_affected += res.affected;
-                }
-                if (res.failed && res.whole_batch) {
-                    throw InvalidInputException("%s: source rows %lld to %lld (one batch) failed: %s%s", kFunctionName,
-                                                static_cast<long long>(first + 1),
-                                                static_cast<long long>(first + static_cast<int64_t>(res.sent)),
-                                                res.error, kept());
-                }
-                if (res.failed) {
-                    fail(first + static_cast<int64_t>(res.failed_index) + 1, res.error);
-                }
-            };
-            while (true) {
-                auto chunk = source.Fetch();
-                if (!chunk || chunk->size() == 0) {
-                    break;
-                }
-                for (idx_t r = 0; r < chunk->size(); ++r) {
-                    try {
-                        encoder->Encode(*chunk, r);
-                        if (batch) {
-                            batch->Add();
-                        } else {
-                            stmt.ExecuteWithInput(bind.sql);
-                            if (bind.count_rows) {
-                                rows_affected += stmt.RecordsAffected();
-                            }
+            for (idx_t r = 0; r < chunk->size(); ++r) {
+                try {
+                    encoder->Encode(*chunk, r);
+                    if (batch) {
+                        batch->Add();
+                    } else {
+                        stmt.ExecuteWithInput(bind.sql);
+                        if (bind.count_rows) {
+                            rows_affected += stmt.RecordsAffected();
                         }
-                    } catch (std::exception &ex) {
-                        // The rows before it go first, so a failure among
-                        // them is named, as one row at a time would.
-                        const std::string error = ErrorData(ex).RawMessage();
-                        flush();
-                        fail(added + 1, error);
                     }
-                    ++added;
-                    if (!batch) {
-                        ++executions;
-                    } else if (static_cast<int64_t>(batch->Pending()) >= bind.batch_size || batch->Full()) {
-                        flush();
-                    }
-                    if (bind.commit_every > 0 && added % bind.commit_every == 0) {
-                        flush();
-                        conn.CommitWrite();
-                        conn.StartWriteTransaction(bind.lock_timeout_s);
-                        committed = executions;
-                    }
+                } catch (std::exception &ex) {
+                    fail(added + 1, ErrorData(ex).RawMessage());
+                }
+                ++added;
+                if (!batch) {
+                    ++executions;
+                } else if (static_cast<int64_t>(batch->Pending()) >= bind.batch_size || batch->Full()) {
+                    flush();
+                }
+                if (bind.commit_every > 0 && added % bind.commit_every == 0) {
+                    flush();
+                    conn.CommitWrite();
+                    conn.StartWriteTransaction(bind.lock_timeout_s);
+                    committed = executions;
                 }
             }
-            flush();
-            if (source.HasError()) {
-                throw InvalidInputException("%s: the source query failed after %lld row(s): %s%s", kFunctionName,
-                                            static_cast<long long>(added), source.GetError(), kept());
-            }
         }
+        flush();
+        if (source.HasError()) {
+            throw InvalidInputException("%s: the source query failed after %lld row(s): %s%s", kFunctionName,
+                                        static_cast<long long>(added), source.GetError(), kept());
+        }
+    }
 #ifdef FIREBIRD_DUCKDB_V2
-        // DuckDB 2.0 runs this statement's result lazily and rolls the statement
-        // back when its client closes before reading it all (fetchone(), then
-        // close): the write would be lost without an error. In autocommit the
-        // statement is the transaction, so commit the Firebird write here,
-        // before the row is returned. Inside BEGIN ... COMMIT nothing changes.
-        // (1.5 materializes the result instead; see the bind.)
-        if (context.transaction.IsAutoCommit() && !create_db) {
-            CommitFirebirdWriteNow(context, *bind.attach.catalog);
-        }
+    // DuckDB 2.0 runs this statement's result lazily and rolls the statement
+    // back when its client closes before reading it all (fetchone(), then
+    // close): the write would be lost without an error. In autocommit the
+    // statement is the transaction, so commit the Firebird write here,
+    // before the row is returned. Inside BEGIN ... COMMIT nothing changes.
+    // (1.5 materializes the result instead; see the bind.)
+    if (context.transaction.IsAutoCommit() && !create_db) {
+        CommitFirebirdWriteNow(context, *bind.attach.catalog);
+    }
 #endif
     } catch (std::exception &ex) {
         obs->SetWriteResult(write_mode, executions, -1);

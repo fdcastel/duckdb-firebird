@@ -141,12 +141,7 @@ void FirebirdParamEncoder::Setup(Slot &slot) {
         }
     }
 
-    if (fixed_layout_ && slot.wire == Wire::WIDE && target_text) {
-        // One layout for every row (batches, Firebird 4+). Into text, the
-        // text the per-row mode stores: 1.5, not 1.5000000000.
-        slot.wire = Wire::TEXT;
-        slot.wide_text = true;
-    } else if (fixed_layout_ && slot.wire == Wire::WIDE) {
+    if (fixed_layout_ && slot.wire == Wire::WIDE) {
         // One layout for every row (batches, Firebird 4+): INT128 holds any
         // value WIDE would send, with the DECIMAL's own scale.
         slot.wire = Wire::INT128;
@@ -230,31 +225,9 @@ void FirebirdParamEncoder::Setup(Slot &slot) {
     slot.buffer.assign(size, 0);
 }
 
-// A wide DECIMAL / HUGEINT as an unscaled value and scale, trailing zero
-// decimals dropped (they carry no value).
-static void WideDigits(const LogicalType &source, const Value &value, hugeint_t &h, uint8_t &scale) {
-    scale = 0;
-    if (source.id() == LogicalTypeId::DECIMAL) {
-        h = value.GetValueUnsafe<hugeint_t>();
-        scale = DecimalType::GetScale(source);
-    } else {
-        h = value.DefaultCastAs(LogicalType::HUGEINT).GetValue<hugeint_t>();
-    }
-    while (scale > 0 && h % hugeint_t(10) == hugeint_t(0)) {
-        h /= hugeint_t(10);
-        --scale;
-    }
-}
-
 std::string FirebirdParamEncoder::TextBytes(idx_t index, const Slot &slot, const Value &value) {
     if (slot.source.id() == LogicalTypeId::BLOB) {
         return StringValue::Get(value);  // raw bytes
-    }
-    if (slot.wide_text) {
-        hugeint_t h;
-        uint8_t scale;
-        WideDigits(slot.source, value, h, scale);
-        return Decimal::ToString(h, 38, scale);
     }
     std::string text = slot.source.id() == LogicalTypeId::VARCHAR
                            ? StringValue::Get(value)
@@ -322,8 +295,18 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
     }
     case Wire::WIDE: {
         hugeint_t h;
-        uint8_t scale;
-        WideDigits(slot.source, value, h, scale);
+        uint8_t scale = 0;
+        if (slot.source.id() == LogicalTypeId::DECIMAL) {
+            h = value.GetValueUnsafe<hugeint_t>();
+            scale = DecimalType::GetScale(slot.source);
+        } else {
+            h = value.DefaultCastAs(LogicalType::HUGEINT).GetValue<hugeint_t>();
+        }
+        // Trailing zero decimals carry no value.
+        while (scale > 0 && h % hugeint_t(10) == hugeint_t(0)) {
+            h /= hugeint_t(10);
+            --scale;
+        }
         int64_t small;
         if (Hugeint::TryCast(h, small)) {
             x.sqltype = SQL_INT64 | 1;

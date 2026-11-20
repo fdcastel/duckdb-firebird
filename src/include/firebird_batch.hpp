@@ -14,15 +14,14 @@ namespace duckdb {
 // parameters: rows are encoded by a fixed-layout FirebirdParamEncoder,
 // copied into one batch message each, and sent together on Execute().
 //
-// INSERT/UPDATE/DELETE on Firebird 4+, EXECUTE PROCEDURE / EXECUTE BLOCK
-// on Firebird 5+ (a Firebird 4 server fails the second EXECUTE BLOCK
-// message of a batch with "request synchronization error"). Parameters
-// that are BLOBs keep the per-row path.
+// Only plain INSERT/UPDATE/DELETE on Firebird 4 (its server fails the
+// second EXECUTE BLOCK message of a batch with "request synchronization
+// error"), and any statement that returns no rows on Firebird 5+.
+// Parameters that are BLOBs keep the per-row path.
 class FirebirdBatchWriter {
 public:
     // Null (and the reason in *why_not) when the statement can't be
-    // batched here: client older than Firebird 4 (no
-    // fb_get_statement_interface), server older than 4, a
+    // batched here: client without the OO API, server older than 4, a
     // statement type the server can't batch, BLOB parameters, or
     // createBatch failed. The encoder must have been built with
     // fixed_layout = true on `stmt`.
@@ -48,10 +47,6 @@ public:
         int64_t affected = -1;      // sum of record counts; -1 = not reported
         bool failed = false;
         idx_t failed_index = 0;     // 0-based within this batch
-        // The batch as a whole failed (IBatch::execute itself, e.g. a lost
-        // connection), not one message: failed_index names no row.
-        bool whole_batch = false;
-        idx_t sent = 0;             // messages in the batch
         std::string error;
     };
     // Sends the pending messages in the connection's current transaction.

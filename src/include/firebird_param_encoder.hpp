@@ -91,9 +91,6 @@ private:
         int16_t sqlsubtype = 0;
         int16_t sqllen = 0;
         bool none_target = false;  // text for a CHARACTER SET NONE target
-        // Fixed layout, a wide DECIMAL / HUGEINT into a text parameter: the
-        // text WIDE sends one row at a time (trailing zero decimals dropped).
-        bool wide_text = false;
         std::vector<char> buffer;
         short indicator = 0;
     };

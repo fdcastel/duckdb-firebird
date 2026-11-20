@@ -97,7 +97,7 @@ std::unique_ptr<FirebirdBatchWriter> FirebirdBatchWriter::TryCreate(FirebirdConn
     };
     const auto &api = fbapi();
     if (!api.fb_get_master_interface || !api.fb_get_statement_interface || !api.fb_get_transaction_interface) {
-        return no("the Firebird client library has no fb_get_statement_interface (Firebird 4+ client needed)");
+        return no("the Firebird client library has no OO API (Firebird 4+ client needed)");
     }
     const int major = conn.EngineMajor();
     if (major < 4) {
@@ -238,10 +238,9 @@ FirebirdBatchWriter::Result FirebirdBatchWriter::Execute() {
     tra->release();
     const idx_t sent = pending_;
     pending_ = 0;
-    r.sent = sent;
     if (Failed(*status)) {
         r.failed = true;
-        r.whole_batch = true;
+        r.failed_index = 0;
         r.error = "IBatch::execute: " + StatusErrors(*status);
         return r;
     }
