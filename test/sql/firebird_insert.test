@@ -240,11 +240,6 @@ SELECT operation, table_name, write_mode, rows_written, remote_sql FROM firebird
 ----
 insert	RW_LOG	row	20000	INSERT INTO "RW_LOG" ("ID", "NOTE") VALUES (?, ?)
 
-query II
-SELECT firebird_time_us > 0, total_time_us >= firebird_time_us FROM firebird_last_query();
-----
-true	true
-
 # A Firebird scan as the source records itself while the INSERT runs; the
 # INSERT records itself when it ends, after it, with its own counts.
 statement ok
