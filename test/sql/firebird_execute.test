@@ -279,14 +279,27 @@ SELECT remote_sql LIKE '%s3cret%', remote_sql LIKE '%PASSWORD ''***''%' FROM fir
 ----
 false	true
 
-# The user exists now: creating it again fails, and the error hides the literal.
+# The user exists now: creating it again fails (at commit: Firebird runs DDL
+# there), and the error doesn't show the literal.
 statement error
 SELECT * FROM firebird_execute('rw', 'CREATE USER FBX_T32 PASSWORD ''s3cret-32b''');
 ----
-<!REGEX>:.*s3cret.*
+<!REGEX>:(?s).*s3cret.*
+
+query I
+SELECT error_message LIKE '%s3cret%' FROM firebird_last_query();
+----
+false
+
+# An error that quotes the statement (EXECUTE STATEMENT ... ON EXTERNAL to a
+# database that doesn't exist fails when it runs) shows the literal as '***'.
+statement error
+SELECT * FROM firebird_execute('rw', 'EXECUTE BLOCK AS DECLARE X INTEGER; BEGIN EXECUTE STATEMENT ''SELECT 1 FROM RDB$DATABASE'' ON EXTERNAL ''localhost:/no/such/fbx_t32.fdb'' AS USER ''SYSDBA'' PASSWORD ''s3cret-32c'' INTO :X; END');
+----
+<!REGEX>:(?s).*s3cret.*
 
 query II
-SELECT error_message LIKE '%s3cret%', error_message LIKE '%***%' FROM firebird_last_query();
+SELECT error_message LIKE '%s3cret%', error_message LIKE '%PASSWORD ''***''%' FROM firebird_last_query();
 ----
 false	true
 
