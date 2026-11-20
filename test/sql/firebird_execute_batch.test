@@ -198,6 +198,13 @@ SELECT count(*) FROM ro.main.RW_TARGET;
 
 # --- batch_size := overrides the setting, both ways; NULL means not given ---------
 
+# A negative size is refused when it is set (INSERT and firebird_execute
+# would otherwise read it differently).
+statement error
+SET firebird_write_batch_size = -1;
+----
+firebird_write_batch_size must be >= 0
+
 statement ok
 SET firebird_write_batch_size = 0;
 

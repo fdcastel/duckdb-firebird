@@ -142,15 +142,24 @@ std::unique_ptr<FirebirdBatchWriter> FirebirdBatchWriter::TryCreate(FirebirdConn
     if (Failed(*status)) {
         return no("getMetadataBuilder: " + StatusErrors(*status));
     }
-    for (unsigned i = 0; i < n; ++i) {
+    // Every interface call resets the status, so each one is checked before
+    // the next.
+    for (unsigned i = 0; i < n && !Failed(*status); ++i) {
         const auto &p = layout[i];
         builder->setType(status, i, static_cast<unsigned>(p.sqltype) | 1u);
-        builder->setLength(status, i, static_cast<unsigned>(p.sqllen));
+        if (!Failed(*status)) {
+            builder->setLength(status, i, static_cast<unsigned>(p.sqllen));
+        }
+        if (Failed(*status)) {
+            break;
+        }
         if (IsText(p.sqltype)) {
             builder->setCharSet(status, i, static_cast<unsigned>(p.sqlsubtype & 0xFF));
         } else {
             builder->setSubType(status, i, p.sqlsubtype);
-            builder->setScale(status, i, p.sqlscale);
+            if (!Failed(*status)) {
+                builder->setScale(status, i, p.sqlscale);
+            }
         }
     }
     if (!Failed(*status)) {
@@ -163,11 +172,24 @@ std::unique_ptr<FirebirdBatchWriter> FirebirdBatchWriter::TryCreate(FirebirdConn
 
     Firebird::IXpbBuilder *pb =
         d.master->getUtilInterface()->getXpbBuilder(status, Firebird::IXpbBuilder::BATCH, nullptr, 0);
+    if (Failed(*status) || !pb) {
+        return no("getXpbBuilder: " + StatusErrors(*status));
+    }
     if (d.count_rows) {
         pb->insertInt(status, Firebird::IBatch::TAG_RECORD_COUNTS, 1);
     }
-    pb->insertInt(status, Firebird::IBatch::TAG_BUFFER_BYTES_SIZE, static_cast<int>(kBatchBufferBytes));
-    d.batch = d.istmt->createBatch(status, d.meta, pb->getBufferLength(status), pb->getBuffer(status));
+    if (!Failed(*status)) {
+        pb->insertInt(status, Firebird::IBatch::TAG_BUFFER_BYTES_SIZE, static_cast<int>(kBatchBufferBytes));
+    }
+    if (Failed(*status)) {
+        pb->dispose();
+        return no("batch parameters: " + StatusErrors(*status));
+    }
+    const unsigned pb_length = pb->getBufferLength(status);
+    const unsigned char *pb_buffer = Failed(*status) ? nullptr : pb->getBuffer(status);
+    if (!Failed(*status)) {
+        d.batch = d.istmt->createBatch(status, d.meta, pb_length, pb_buffer);
+    }
     pb->dispose();
     if (Failed(*status)) {
         d.batch = nullptr;
@@ -176,12 +198,22 @@ std::unique_ptr<FirebirdBatchWriter> FirebirdBatchWriter::TryCreate(FirebirdConn
 
     for (unsigned i = 0; i < n; ++i) {
         d.offsets.push_back(d.meta->getOffset(status, i));
-        d.null_offsets.push_back(d.meta->getNullOffset(status, i));
-        d.lengths.push_back(d.meta->getLength(status, i));
+        if (!Failed(*status)) {
+            d.null_offsets.push_back(d.meta->getNullOffset(status, i));
+        }
+        if (!Failed(*status)) {
+            d.lengths.push_back(d.meta->getLength(status, i));
+        }
+        if (Failed(*status)) {
+            return no("message layout: " + StatusErrors(*status));
+        }
         d.types.push_back(layout[i].sqltype);
     }
     d.message.assign(d.meta->getMessageLength(status), 0);
-    const unsigned aligned = d.meta->getAlignedLength(status);
+    unsigned aligned = 0;
+    if (!Failed(*status)) {
+        aligned = d.meta->getAlignedLength(status);
+    }
     if (Failed(*status)) {
         return no("message layout: " + StatusErrors(*status));
     }
@@ -214,6 +246,8 @@ void FirebirdBatchWriter::Add() {
     }
     d.batch->add(d.status.get(), 1, d.message.data());
     if (Failed(*d.status)) {
+        // A lost connection marks the connection broken, as on the per-row path.
+        d.conn->NoteStatus(reinterpret_cast<const ISC_STATUS *>(d.status->getErrors()));
         throw IOException("IBatch::add: " + StatusErrors(*d.status));
     }
     ++pending_;
@@ -240,6 +274,8 @@ FirebirdBatchWriter::Result FirebirdBatchWriter::Execute() {
     pending_ = 0;
     r.sent = sent;
     if (Failed(*status)) {
+        // A lost connection marks the connection broken, as on the per-row path.
+        d.conn->NoteStatus(reinterpret_cast<const ISC_STATUS *>(status->getErrors()));
         r.failed = true;
         r.whole_batch = true;
         r.error = "IBatch::execute: " + StatusErrors(*status);
