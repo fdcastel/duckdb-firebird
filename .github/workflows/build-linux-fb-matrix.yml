@@ -456,6 +456,10 @@ jobs:
             "$GITHUB_WORKSPACE/build/release/extension/firebird/firebird.duckdb_extension" \
             "$FIREBIRD_RW_DB"
 
+      - name: Investigate issue 36 (fork only, prints results)
+        run: |
+          /tmp/pyduck/bin/python scripts/investigate_36.py             "$GITHUB_WORKSPACE/build/release/extension/firebird/firebird.duckdb_extension"             "$FIREBIRD_RW_DB" || true
+
       - name: Firebird 4 client against the Firebird 5 server (inline_blobs_unavailable)
         # One Firebird 5 leg is enough: the inline-blob decision in
         # firebird_health.cpp and the client loader have no DuckDB-version
