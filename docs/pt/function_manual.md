@@ -823,7 +823,8 @@ Retorna uma linha:
   BLOBs de qualquer tamanho. Cada linha define todos os parametros de
   novo, entao um valor depois de um NULL nunca e enviado como NULL. Datas
   fora de 0001-01-01 a 9999-12-31 (datas AC, anos depois de 9999) e
-  `TIME '24:00:00'` sao erro: o Firebird nao as guarda.
+  `TIME '24:00:00'` sao erro: o Firebird nao as guarda. (No filtro de um
+  scan, uma constante assim fica como filtro do DuckDB.)
 - **`commit_every := N`** confirma a cada N linhas; essas linhas ficam
   confirmadas se uma linha seguinte falhar. 0 (padrao) confirma com a
   transacao DuckDB. Exige autocommit: dentro de `BEGIN ... COMMIT` a

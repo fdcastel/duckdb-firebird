@@ -90,6 +90,10 @@ void ValidateMaxInlineBlobSize(int64_t bytes);
 // returns "" when the library doesn't export isc_get_client_version.
 std::string FirebirdClientVersion();
 
+// Major version of the loaded client library (FirebirdClientVersion), read
+// once; 0 when it can't be told.
+int FirebirdClientMajor();
+
 // Removes credentials from a message that may echo a connection string:
 // 'password=...' values, 'scheme://user:pass@' user info, and every
 // literal occurrence of `password`.

@@ -476,6 +476,20 @@ SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_TIME) VALUES 
 ----
 TIME '24:00:00' is outside Firebird's times
 
+statement error
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_TIME) VALUES (?, ?)',
+    source := $$SELECT 98, '24:00:00+00'::TIMETZ$$);
+----
+<REGEX>:.*(TIME '24:00:00' is outside Firebird's times|Conversion Error).*
+
+# A statement that fails to prepare at bind quotes the SQL: its literals are
+# hidden there too, as the statement mentions PASSWORD.
+statement error
+SELECT * FROM firebird_execute('rw', 'EXECUTE BLOCK (X INTEGER = ?) AS DECLARE N INTEGER; BEGIN EXECUTE STATEMENT ''SELECT 1 FROM RDB$DATABASE'' ON EXTERNAL ''localhost:/no/such.fdb'' AS USER ''SYSDBA'' PASSWORD ''s3cret-bind'' INTO :NO_SUCH_VARIABLE; END',
+    source := 'SELECT 1');
+----
+<!REGEX>:(?s).*s3cret.*
+
 query I
 SELECT count(*) FROM firebird_query('rw', 'SELECT ID FROM RW_TARGET');
 ----

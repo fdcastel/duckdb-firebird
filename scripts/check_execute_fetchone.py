@@ -13,7 +13,9 @@ Usage: python check_execute_fetchone.py <firebird.duckdb_extension> <connection 
 Needs the Python duckdb package of the same version as the extension, and
 scripts/fixture_rw.sql loaded in the database.
 """
+import os
 import sys
+import threading
 
 import duckdb
 
@@ -53,6 +55,39 @@ for marker, sql in cases.items():
     if n != 1:
         failures += 1
     print(f"{status}: {sql[:70]}... -> {n} row(s) after close")
+
+# Three calls with a source in one statement, on fewer threads than calls:
+# they wait for each other on the transaction's write connection while each
+# runs its source query, which must still make progress (no hang).
+con = connect()
+con.execute("SET threads = 2")
+union = " UNION ALL ".join(
+    f"SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_LOG (ID, NOTE) VALUES (?, ?)', "
+    f"source := 'SELECT {base} + i, ''union'' FROM range(3000) t(i)')"
+    for base in (100000, 200000, 300000))
+outcome = {}
+
+
+def run_union():
+    try:
+        outcome["rows"] = con.execute(union).fetchall()
+    except Exception as e:  # noqa: BLE001 - reported below
+        outcome["error"] = str(e).splitlines()[0][:200]
+
+
+worker = threading.Thread(target=run_union, daemon=True)
+worker.start()
+worker.join(120)
+if worker.is_alive():
+    print("FAILED: three source calls under UNION ALL with 2 threads still run after 120 s")
+    sys.stdout.flush()
+    os._exit(1)
+if outcome.get("rows") != [(3000, 3000)] * 3:
+    failures += 1
+    print(f"FAILED: three source calls under UNION ALL -> {outcome}")
+else:
+    print("ok: three source calls under UNION ALL with 2 threads")
+con.close()
 
 con = connect()
 con.execute("SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_LOG')").fetchall()

@@ -141,13 +141,15 @@ void FirebirdParamEncoder::Setup(Slot &slot) {
         }
     }
 
-    if (slot.wire == Wire::WIDE && !target_text && stmt_.Connection().EngineMajor() >= 4) {
-        // Firebird 4+: INT128 with the DECIMAL's own scale, which the server
-        // rounds to the target as it does the literal. WIDE would send a
-        // value whose digits don't fit in 64 bits as text, and the server
-        // overflows converting text with more digits than the target holds
-        // (1.12345678901234567891 into NUMERIC(18,4)). Firebird 3 has no
-        // INT128 and refuses that literal too.
+    if (slot.wire == Wire::WIDE && !target_text && FirebirdClientMajor() >= 4 &&
+        stmt_.Connection().EngineMajor() >= 4) {
+        // Firebird 4+ client and server: INT128 with the DECIMAL's own scale,
+        // which the server rounds to the target as it does the literal. WIDE
+        // would send a value whose digits don't fit in 64 bits as text, and
+        // the server overflows converting text with more digits than the
+        // target holds (1.12345678901234567891 into NUMERIC(18,4)). Firebird
+        // 3 has no INT128 and refuses that literal too; a Firebird 3 client
+        // can't send SQL_INT128 even to a Firebird 4 server.
         slot.wire = Wire::INT128;
         slot.sqlscale = src.id() == LogicalTypeId::DECIMAL
                             ? static_cast<int16_t>(-DecimalType::GetScale(src))
@@ -254,12 +256,54 @@ std::string FirebirdParamEncoder::TextBytes(idx_t index, const Slot &slot, const
 // Firebird's dates run from 0001-01-01 to 9999-12-31; DuckDB's go further
 // (BC dates, years past 9999), and the raw ISC_DATE of those is not a date
 // Firebird can hold.
-static void CheckFirebirdDate(idx_t index, date_t d) {
+static bool InFirebirdDates(date_t d) {
     static const date_t kMin = Date::FromDate(1, 1, 1);
     static const date_t kMax = Date::FromDate(9999, 12, 31);
-    if (d < kMin || d > kMax) {
-        throw InvalidInputException("parameter %llu: %s is outside Firebird's dates (0001-01-01 to 9999-12-31)",
-                                    static_cast<unsigned long long>(index + 1), Date::ToString(d));
+    return d >= kMin && d <= kMax;
+}
+
+constexpr int64_t kDayMicros = 86400LL * 1000000LL;
+
+// utc: the date of a TIMESTAMPTZ, shifted to UTC.
+static void CheckFirebirdDate(idx_t index, date_t d, bool utc = false) {
+    if (!InFirebirdDates(d)) {
+        throw InvalidInputException("parameter %llu: %s%s is outside Firebird's dates (0001-01-01 to 9999-12-31)",
+                                    static_cast<unsigned long long>(index + 1), Date::ToString(d),
+                                    utc ? " (in UTC)" : "");
+    }
+}
+
+static void CheckFirebirdTime(idx_t index, int64_t micros) {
+    if (micros >= kDayMicros) {
+        throw InvalidInputException("parameter %llu: TIME '24:00:00' is outside Firebird's times "
+                                    "(00:00:00 to 23:59:59.9999)",
+                                    static_cast<unsigned long long>(index + 1));
+    }
+}
+
+bool FirebirdCanBindValue(const Value &value) {
+    if (value.IsNull()) {
+        return true;
+    }
+    switch (value.type().id()) {
+    case LogicalTypeId::DATE: {
+        const date_t d = value.GetValue<date_t>();
+        return d != date_t::infinity() && d != date_t::ninfinity() && InFirebirdDates(d);
+    }
+    case LogicalTypeId::TIMESTAMP: {
+        const timestamp_t ts = value.GetValue<timestamp_t>();
+        if (ts == timestamp_t::infinity() || ts == timestamp_t::ninfinity()) {
+            return false;
+        }
+        date_t d;
+        dtime_t t;
+        Timestamp::Convert(ts, d, t);
+        return InFirebirdDates(d);
+    }
+    case LogicalTypeId::TIME:
+        return TimeMicros(value.GetValue<dtime_t>()) < kDayMicros;
+    default:
+        return true;
     }
 }
 
@@ -368,16 +412,12 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
         int64_t micros;
         if (slot.source.id() == LogicalTypeId::TIME_TZ) {
             const dtime_tz_t tz = value.GetValue<dtime_tz_t>();
-            constexpr int64_t kDay = 86400LL * 1000000LL;
+            CheckFirebirdTime(index, TimeMicros(tz.time()));
             micros = TimeMicros(tz.time()) - static_cast<int64_t>(tz.offset()) * 1000000LL;
-            micros = ((micros % kDay) + kDay) % kDay;
+            micros = ((micros % kDayMicros) + kDayMicros) % kDayMicros;
         } else {
             micros = TimeMicros(value.GetValue<dtime_t>());
-            if (micros >= 86400LL * 1000000LL) {
-                throw InvalidInputException("parameter %llu: TIME '24:00:00' is outside Firebird's times "
-                                            "(00:00:00 to 23:59:59.9999)",
-                                            static_cast<unsigned long long>(index + 1));
-            }
+            CheckFirebirdTime(index, micros);
         }
         // Firebird keeps 1/10000 s: sub-100-microsecond digits are dropped.
         const ISC_TIME fb = static_cast<ISC_TIME>(micros / 100);
@@ -403,7 +443,7 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
         date_t d;
         dtime_t t;
         Timestamp::Convert(ts, d, t);
-        CheckFirebirdDate(index, d);
+        CheckFirebirdDate(index, d, slot.source.id() == LogicalTypeId::TIMESTAMP_TZ);
         const ISC_DATE fb_date = static_cast<ISC_DATE>(d.days + kMjdToUnixDays);
         const ISC_TIME fb_time = static_cast<ISC_TIME>(TimeMicros(t) / 100);
         Put(slot.buffer, fb_date, 0);
@@ -415,9 +455,9 @@ void FirebirdParamEncoder::EncodeValue(idx_t index, Slot &slot, const Value &val
     }
     case Wire::TIME_TZ: {
         const dtime_tz_t tz = value.GetValue<dtime_tz_t>();
-        constexpr int64_t kDay = 86400LL * 1000000LL;
+        CheckFirebirdTime(index, TimeMicros(tz.time()));
         int64_t micros = TimeMicros(tz.time()) - static_cast<int64_t>(tz.offset()) * 1000000LL;
-        micros = ((micros % kDay) + kDay) % kDay;
+        micros = ((micros % kDayMicros) + kDayMicros) % kDayMicros;
         const ISC_TIME fb = static_cast<ISC_TIME>(micros / 100);
         Put(slot.buffer, fb, 0);
         Put(slot.buffer, kGmtZone, 4);

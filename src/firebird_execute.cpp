@@ -385,8 +385,13 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
                 FirebirdStatement stmt(*conn, bind->sql, FirebirdStatement::PrepareOnlyTag {});
                 CheckStatementType(stmt, false);
                 param_count = stmt.DescribeInput().size();
-            } catch (...) {
+            } catch (std::exception &ex) {
                 bind->attach.pool->Release(std::move(conn));
+                // A prepare error quotes the statement: hide its literals too.
+                if (bind->logged_sql != bind->sql) {
+                    ErrorData error(ex);
+                    ErrorData(error.Type(), RedactMessage(error.RawMessage(), *bind)).Throw();
+                }
                 throw;
             }
             bind->attach.pool->Release(std::move(conn));
@@ -541,7 +546,14 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                     // of this statement), so a column now of another type
                     // would be misread (5 read as 0.05).
                     const auto &now = chunk->GetTypes();
-                    for (idx_t c = 0; c < now.size() && c < bind.source_types.size(); ++c) {
+                    if (now.size() != bind.source_types.size()) {
+                        throw InvalidInputException("%s: the source query returned %llu column(s) when the call was "
+                                                    "bound and returns %llu now; prepare the statement again.%s",
+                                                    kFunctionName,
+                                                    static_cast<unsigned long long>(bind.source_types.size()),
+                                                    static_cast<unsigned long long>(now.size()), kept());
+                    }
+                    for (idx_t c = 0; c < now.size(); ++c) {
                         if (now[c] != bind.source_types[c]) {
                             throw InvalidInputException(
                                 "%s: source column %llu was %s when the call was bound and is %s now; "

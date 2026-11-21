@@ -572,7 +572,7 @@ Returns one row:
   size. Every row sets every parameter again, so a value after a NULL is
   never sent as NULL. Dates outside 0001-01-01 to 9999-12-31 (BC dates,
   years past 9999) and `TIME '24:00:00'` are an error: Firebird can't
-  hold them.
+  hold them. (In a scan's filter, such a constant stays a DuckDB filter.)
 - **`commit_every := N`** commits every N rows; those rows stay committed
   if a later row fails. 0 (default) commits with the DuckDB transaction.
   It needs autocommit: inside `BEGIN ... COMMIT` the call fails, because
