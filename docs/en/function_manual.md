@@ -534,11 +534,17 @@ Returns one row:
   `SET STATEMENT TIMEOUT`, `SET OPTIMIZE`, `ALTER SESSION`. The write
   connection goes back to the ATTACH's pool, and later writes would
   inherit the change.
-- **Passwords.** The query log and error messages show the literal after
-  `PASSWORD` (`CREATE USER ... PASSWORD '...'`, `EXECUTE STATEMENT ...
-  PASSWORD '...'`) as `'***'`.
+- **Passwords.** When a statement mentions `PASSWORD` (`CREATE USER ...
+  PASSWORD '...'`, `EXECUTE STATEMENT ... PASSWORD '...'`, also inside a
+  nested statement), this extension's query log and error messages show
+  every string literal of it as `'***'`. DuckDB's own logs and the client
+  still see the call as typed.
 - **Two calls in one statement** (for example under `UNION ALL`) run one
-  after the other, on the DuckDB transaction's one write transaction.
+  after the other on the DuckDB transaction's write connection. On DuckDB
+  2.0 in autocommit each one commits its own write (see below).
+- **Session state** that a procedure, a trigger or an `EXECUTE BLOCK` sets
+  (a role, `RDB$SET_CONTEXT('USER_SESSION', ...)`) can stay with the write
+  connection, which goes back to the ATTACH's pool.
 - **DDL.** `CREATE`, `ALTER` and `DROP` run like any statement. Once the
   transaction commits, the ATTACH loads its tables again, so `fb.main`
   shows the change without a new ATTACH; a prepared statement sees it too

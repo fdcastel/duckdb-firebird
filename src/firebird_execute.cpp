@@ -10,9 +10,9 @@
 // Returns one row: rows_affected (inserted + updated + deleted, as Firebird
 // reports them; NULL for a statement that returns rows) and executions.
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <regex>
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/database_modification_type.hpp"
@@ -119,33 +119,133 @@ void CheckSessionStatement(const std::string &sql) {
     }
 }
 
-// The SQL as the query log and error messages show it: every literal after
-// PASSWORD (CREATE / ALTER USER, EXECUTE STATEMENT ... PASSWORD) becomes
-// '***'. secrets gets each literal's text, as written and with '' undone.
-std::string RedactPasswords(const std::string &sql, std::vector<std::string> &secrets) {
-    static const std::regex kPassword(R"(\bPASSWORD(\s+)'((?:[^']|'')*)')",
-                                      std::regex::ECMAScript | std::regex::icase);
-    std::string out;
-    auto last = sql.cbegin();
-    for (std::sregex_iterator it(sql.cbegin(), sql.cend(), kPassword), end; it != end; ++it) {
-        const auto &m = *it;
-        out.append(last, m[0].first);
-        out += m.str(0).substr(0, 8) + m.str(1) + "'***'";
-        const std::string written = m.str(2);
-        if (!written.empty()) {
-            secrets.push_back(written);
-            const std::string plain = StringUtil::Replace(written, "''", "'");
-            if (plain != written) {
-                secrets.push_back(plain);
+// A string literal of a statement: its span in the SQL (quotes included)
+// and its text, with '' undone.
+struct SqlLiteral {
+    size_t begin;
+    size_t end;
+    std::string text;
+};
+
+bool IsSqlWordChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
+}
+
+// Reads a statement the way Firebird's lexer does for what matters here:
+// comments, quoted identifiers, '...' and q'...' literals. Returns the
+// literals, and in password_word whether the word PASSWORD appears outside
+// them.
+std::vector<SqlLiteral> ScanSqlLiterals(const std::string &sql, bool &password_word) {
+    std::vector<SqlLiteral> out;
+    password_word = false;
+    const size_t n = sql.size();
+    size_t i = 0;
+    while (i < n) {
+        const char c = sql[i];
+        if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
+            while (i < n && sql[i] != '\n') {
+                ++i;
             }
+        } else if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
+            const auto close = sql.find("*/", i + 2);
+            i = close == std::string::npos ? n : close + 2;
+        } else if (c == '"') {
+            for (++i; i < n; ++i) {
+                if (sql[i] == '"') {
+                    if (i + 1 < n && sql[i + 1] == '"') {
+                        ++i;
+                        continue;
+                    }
+                    ++i;
+                    break;
+                }
+            }
+        } else if ((c == 'q' || c == 'Q') && i + 2 < n && sql[i + 1] == '\'' &&
+                   (i == 0 || !IsSqlWordChar(sql[i - 1]))) {
+            // q'<x>...<x>', with (), [], {} or <> as pairs.
+            const char open = sql[i + 2];
+            const char close = open == '(' ? ')' : open == '[' ? ']' : open == '{' ? '}' : open == '<' ? '>' : open;
+            size_t j = i + 3;
+            while (j < n && !(sql[j] == close && j + 1 < n && sql[j + 1] == '\'')) {
+                ++j;
+            }
+            const size_t end = j < n ? j + 2 : n;
+            out.push_back({i, end, sql.substr(i + 3, (j < n ? j : n) - (i + 3))});
+            i = end;
+        } else if (c == '\'') {
+            std::string text;
+            size_t j = i + 1;
+            while (j < n) {
+                if (sql[j] == '\'') {
+                    if (j + 1 < n && sql[j + 1] == '\'') {
+                        text += '\'';
+                        j += 2;
+                        continue;
+                    }
+                    break;
+                }
+                text += sql[j++];
+            }
+            const size_t end = j < n ? j + 1 : n;
+            out.push_back({i, end, text});
+            i = end;
+        } else if (IsSqlWordChar(c)) {
+            const size_t start = i;
+            while (i < n && IsSqlWordChar(sql[i])) {
+                ++i;
+            }
+            if (StringUtil::CIEquals(sql.substr(start, i - start), "PASSWORD")) {
+                password_word = true;
+            }
+        } else {
+            ++i;
         }
-        last = m[0].second;
     }
-    out.append(last, sql.cend());
     return out;
 }
 
-// An error message with the SQL and its password literals hidden.
+// The SQL as the query log and error messages show it. When the statement
+// mentions PASSWORD anywhere, also inside a literal (an EXECUTE STATEMENT
+// of a CREATE USER), every string literal becomes '***': a password can sit
+// in any of them, nested or not. secrets gets what an error message could
+// quote: each literal as written (quotes included), its text when at least
+// 4 characters long (a nested statement), and the literals of a nested
+// statement that mentions PASSWORD; longest first.
+std::string RedactPasswords(const std::string &sql, std::vector<std::string> &secrets) {
+    bool password_word;
+    const auto literals = ScanSqlLiterals(sql, password_word);
+    bool mentioned = password_word;
+    for (auto &literal : literals) {
+        if (StringUtil::Contains(StringUtil::Upper(literal.text), "PASSWORD")) {
+            mentioned = true;
+        }
+    }
+    if (!mentioned) {
+        return sql;
+    }
+    std::string out;
+    size_t last = 0;
+    for (auto &literal : literals) {
+        out.append(sql, last, literal.begin - last);
+        out += "'***'";
+        last = literal.end;
+        if (!literal.text.empty()) {
+            secrets.push_back(sql.substr(literal.begin, literal.end - literal.begin));
+        }
+        if (literal.text.size() >= 4) {
+            secrets.push_back(literal.text);
+        }
+        if (StringUtil::Contains(StringUtil::Upper(literal.text), "PASSWORD")) {
+            RedactPasswords(literal.text, secrets);
+        }
+    }
+    out.append(sql, last, std::string::npos);
+    std::sort(secrets.begin(), secrets.end(),
+              [](const std::string &a, const std::string &b) { return a.size() > b.size(); });
+    return out;
+}
+
+// An error message with the SQL and its literals hidden (see RedactPasswords).
 std::string RedactMessage(const std::string &message, const FirebirdExecuteBindData &bind) {
     std::string out = StringUtil::Replace(message, bind.sql, bind.logged_sql);
     for (auto &secret : bind.secrets) {
@@ -305,12 +405,13 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
 #endif
     } catch (std::exception &ex) {
         ErrorData error(ex);
-        if (!bind.secrets.empty()) {
+        const bool redact = bind.logged_sql != bind.sql;
+        if (redact) {
             error = ErrorData(error.Type(), RedactMessage(error.RawMessage(), bind));
         }
         obs->SetWriteResult("row", executions, -1);
         obs->SetError(error.RawMessage());
-        if (!bind.secrets.empty()) {
+        if (redact) {
             error.Throw();
         }
         throw;

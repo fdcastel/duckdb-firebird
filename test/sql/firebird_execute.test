@@ -306,6 +306,19 @@ false	true
 statement ok
 SELECT * FROM firebird_execute('rw', 'DROP USER FBX_T32');
 
+# A password inside a nested statement (EXECUTE STATEMENT of a CREATE USER):
+# the statement mentions PASSWORD, so every literal of it is hidden.
+statement ok
+SELECT * FROM firebird_execute('rw', 'EXECUTE BLOCK AS BEGIN EXECUTE STATEMENT ''CREATE USER FBX_N32 PASSWORD ''''s3cret-32n''''''; END');
+
+query II
+SELECT remote_sql LIKE '%s3cret%', remote_sql LIKE '%EXECUTE STATEMENT ''***''%' FROM firebird_last_query();
+----
+false	true
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DROP USER FBX_N32');
+
 # --- A lock held by another writer: a clear error, no hang ---------------------
 
 statement ok con1

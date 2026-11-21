@@ -785,11 +785,17 @@ Retorna uma linha:
   `SET STATEMENT TIMEOUT`, `SET OPTIMIZE`, `ALTER SESSION`. A conexao de
   escrita volta ao pool do ATTACH, e as escritas seguintes herdariam a
   mudanca.
-- **Senhas.** O log de queries e as mensagens de erro mostram o literal
-  depois de `PASSWORD` (`CREATE USER ... PASSWORD '...'`, `EXECUTE
-  STATEMENT ... PASSWORD '...'`) como `'***'`.
+- **Senhas.** Quando um comando menciona `PASSWORD` (`CREATE USER ...
+  PASSWORD '...'`, `EXECUTE STATEMENT ... PASSWORD '...'`, tambem dentro de
+  um comando aninhado), o log de queries e as mensagens de erro desta
+  extensao mostram todos os literais dele como `'***'`. Os logs do proprio
+  DuckDB e o cliente ainda veem a chamada como digitada.
 - **Duas chamadas num comando** (por exemplo com `UNION ALL`) rodam uma
-  depois da outra, na unica transacao de escrita da transacao DuckDB.
+  depois da outra na conexao de escrita da transacao DuckDB. No DuckDB 2.0
+  em autocommit, cada uma confirma a propria escrita (veja abaixo).
+- **Estado de sessao** que uma procedure, um trigger ou um `EXECUTE BLOCK`
+  define (um role, `RDB$SET_CONTEXT('USER_SESSION', ...)`) pode ficar na
+  conexao de escrita, que volta ao pool do ATTACH.
 - **DDL.** `CREATE`, `ALTER` e `DROP` rodam como qualquer comando. Depois do
   commit, o ATTACH carrega suas tabelas de novo, e `fb.main` mostra a
   mudanca sem novo ATTACH; um comando preparado tambem a ve (o DuckDB o
