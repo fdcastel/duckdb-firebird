@@ -347,6 +347,16 @@ jobs:
           make release
           ccache --show-stats
 
+      - name: DEBUG interrupted INSERT hang
+        run: |
+          sudo apt-get install -y -qq gdb > /dev/null
+          python3 -m venv /tmp/pycancel
+          /tmp/pycancel/bin/pip install --quiet "duckdb==${DUCKDB_VERSION#v}"
+          timeout 900 /tmp/pycancel/bin/python scripts/debug_cancel_insert.py \
+            "$GITHUB_WORKSPACE/build/release/extension/firebird/firebird.duckdb_extension" \
+            "$FIREBIRD_RW_DB" 40 || true
+          exit 1
+
       - name: CLI with the extension loaded (DuckDB v2.0)
         if: matrix.duckdb == 'v2.0.1'
         run: |
