@@ -147,7 +147,7 @@ void FirebirdParamEncoder::Setup(Slot &slot) {
         slot.wire = Wire::TEXT;
         slot.wide_text = true;
     } else if (slot.wire == Wire::WIDE && !target_text &&
-               (fixed_layout_ || (FirebirdClientMajor() >= 4 && stmt_.Connection().EngineMajor() >= 4))) {
+               (fixed_layout_ || stmt_.Connection().EngineMajor() >= 4)) {
         // INT128 with the DECIMAL's own scale: one layout for every row
         // (batches), and one row at a time with a Firebird 4+ client and
         // server, where the server rounds it to the target as it does the

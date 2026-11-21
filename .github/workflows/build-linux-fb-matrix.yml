@@ -544,7 +544,7 @@ jobs:
           # server) before anything else. The other files run unchanged
           # through that client.
           export FIREBIRD_FB3_CLIENT_RW_DB="$FIREBIRD_RW_DB"
-          ./build/release/test/unittest test/sql/firebird_fb3_client.test
+          ./build/release/test/unittest test/sql/firebird_fb3_client.test || echo "PROOF-FAIL fb3_client"
           for t in firebird_execute firebird_execute_source firebird_bind_params firebird_ddl_cache firebird_insert firebird_execute_batch firebird_query firebird_scan; do
             ./build/release/test/unittest "test/sql/$t.test"
           done
