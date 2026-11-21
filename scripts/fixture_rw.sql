@@ -122,6 +122,13 @@ CREATE TABLE RW_LOG (
     NOTE VARCHAR(20)
 );
 
+/* Every insert into RW_SLOW waits on a four-way cross join of RDB$FIELDS
+ * (hours, see RW_SLOW_BI): scripts/check_cancel_writes.py interrupts one. */
+CREATE TABLE RW_SLOW (
+    ID INTEGER NOT NULL,
+    NOTE VARCHAR(20)
+);
+
 SET TERM ^ ;
 
 CREATE PROCEDURE SP_SEQ (N INTEGER)
@@ -144,6 +151,12 @@ BEGIN
     INSERT INTO RW_LOG (ID, NOTE) VALUES (1, 'written');
     ID = 1;
     SUSPEND;
+END^
+
+CREATE TRIGGER RW_SLOW_BI FOR RW_SLOW BEFORE INSERT AS
+DECLARE N BIGINT;
+BEGIN
+    SELECT COUNT(*) FROM RDB$FIELDS A, RDB$FIELDS B, RDB$FIELDS C, RDB$FIELDS D INTO :N;
 END^
 
 SET TERM ; ^

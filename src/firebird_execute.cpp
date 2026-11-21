@@ -37,6 +37,7 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 
 #include "firebird_batch.hpp"
+#include "firebird_cancel.hpp"
 #include "firebird_client.hpp"
 #include "firebird_observability.hpp"
 #include "firebird_param_encoder.hpp"
@@ -475,6 +476,10 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     RecordFirebirdWrite(context, bind.logged_sql, "execute", "", -1);
     auto obs = GetObservabilityState(context);
     const auto t0 = std::chrono::steady_clock::now();
+    // A DuckDB interrupt cancels the Firebird request the call waits on (see
+    // FirebirdCancelGuard); reset before the early commit, which may release
+    // the connection.
+    std::unique_ptr<FirebirdCancelGuard> cancel;
     try {
         // One write at a time on the DuckDB transaction's write connection:
         // two calls in one statement (UNION ALL, ...) can run in parallel
@@ -485,6 +490,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         // below hands its connection back to the write pool (which may close it).
         if (!bind.has_source) {
             auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
+            cancel = make_uniq<FirebirdCancelGuard>(context, &conn);
             FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
             const bool returns_rows = CheckStatementType(stmt, true);
             const bool is_ddl = stmt.StatementType() == isc_info_sql_stmt_ddl;
@@ -517,6 +523,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
             executions = 1;
         } else {
             auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
+            cancel = make_uniq<FirebirdCancelGuard>(context, &conn);
             FirebirdStatement stmt(conn, bind.sql, FirebirdStatement::PrepareOnlyTag {});
             CheckStatementType(stmt, false);
             const int statement_type = stmt.StatementType();
@@ -602,6 +609,11 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
             bool types_checked = false;
             while (true) {
                 auto chunk = source.Fetch();
+                // The source runs on its own connection, which the
+                // interrupt doesn't reach: check between its chunks.
+                if (context.IsInterrupted()) {
+                    throw InterruptException();
+                }
                 if (!chunk || chunk->size() == 0) {
                     break;
                 }
@@ -695,10 +707,19 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         // before the row is returned. Inside BEGIN ... COMMIT nothing changes.
         // (1.5 materializes the result instead; see the bind.)
         if (context.transaction.IsAutoCommit()) {
+            cancel.reset();
             CommitFirebirdWriteNow(context, *bind.attach.catalog);
         }
 #endif
     } catch (std::exception &ex) {
+        const bool cancelled = cancel && cancel->Cancelled();
+        cancel.reset();
+        if (cancelled) {
+            // The write transaction rolls back with the DuckDB statement.
+            obs->SetWriteResult(write_mode, executions, -1);
+            obs->SetError(InterruptException::INTERRUPT_MESSAGE);
+            throw InterruptException();
+        }
         ErrorData error(ex);
         const bool redact = bind.logged_sql != bind.sql;
         if (redact) {
