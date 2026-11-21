@@ -8,7 +8,8 @@
   (`fb_cancel_operation`): a scan or `firebird_query` blocked on a long
   cursor open or fetch ends within a fraction of a second with DuckDB's
   "Interrupted!" error, instead of waiting for the server. The connection
-  it ran on is dropped from the pool.
+  it ran on is dropped from the pool. Writes too: an interrupted
+  `firebird_execute` or `INSERT INTO fb.main.T` stops and rolls back.
 - `firebird_query(alias, sql)`: runs one Firebird `SELECT` on an ATTACH
   exactly as written (selectable procedures, CTEs, `FIRST`/`SKIP`, Firebird
   functions) and returns its rows, typed as a scan types the same Firebird
