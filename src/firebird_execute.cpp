@@ -20,7 +20,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cctype>
 #include <chrono>
 
 #include "duckdb/catalog/catalog.hpp"
