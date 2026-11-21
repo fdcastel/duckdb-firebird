@@ -24,6 +24,10 @@ computing. Scans and `firebird_query` end within a fraction of a second
 (about a second at most, when the server doesn't answer the cancel) with
 DuckDB's "Interrupted!" error, instead of waiting for the server to
 finish. The connection the request ran on is dropped from the pool.
+Writes too: an interrupted `firebird_execute` (one long statement, or a
+`source` loop) or `INSERT INTO fb.main.T` stops within a fraction of a
+second, and its write transaction rolls back with the DuckDB statement
+(rows an earlier `commit_every` committed stay).
 
 ## Level 1 - Direct reads
 

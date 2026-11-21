@@ -185,20 +185,25 @@ the long-running scan profile used by the peregrine extractor
 Cancellation: DuckDB checks its interrupt flag between chunks, but one
 Firebird call (`isc_dsql_execute` of a sorting query, `isc_dsql_fetch` of
 an aggregate) can block in the client library for minutes. While a scan
-chunk or a `firebird_query` call talks to Firebird, a `FirebirdCancelGuard`
-registers its connection with one shared watcher thread
-(`firebird_cancel.cpp`), which checks the query's interrupt flag every
-100 ms and, once it is set, calls `fb_cancel_operation(fb_cancel_raise)`
-on that attachment. The blocked call fails with "operation was
-cancelled", the caller raises DuckDB's `InterruptException`, and the
-connection is marked broken so the pool drops it. A raise can go
-unanswered (a call that sends one short request after another was seen
-waiting on the server's reply for good, about once in 50 interrupts, on
-Firebird 3, 4 and 5), so a guard still registered 1 s after the raise gets
-`fb_cancel_abort`: the client closes the attachment's network connection,
-the blocked call fails whatever the server does, and the server rolls the
-transaction back. Registering costs one mutex round trip per chunk, not
-per row.
+chunk or a `firebird_query` call talks to Firebird, a
+`FirebirdCancelGuard` registers its connection with one shared watcher
+thread (`firebird_cancel.cpp`), which checks the query's interrupt flag
+every 100 ms and, once it is set, calls
+`fb_cancel_operation(fb_cancel_raise)` on that attachment. The blocked
+call fails with "operation was cancelled", the caller raises DuckDB's
+`InterruptException`, and the connection is marked broken so the pool
+drops it. A raise can go unanswered (a call that sends one short request
+after another was seen waiting on the server's reply for good, about once
+in 50 interrupts, on Firebird 3, 4 and 5), so a guard still registered 1 s
+after the raise gets `fb_cancel_abort`: the client closes the attachment's
+network connection, the blocked call fails whatever the server does, and
+the server rolls the transaction back. Registering costs one mutex round
+trip per chunk, not per row. Writes: `firebird_execute` holds a guard on
+the write connection for the call (released before its early autocommit
+commit), and checks the interrupt flag between the chunks of its `source`
+query, which runs on its own DuckDB connection; the INSERT sink holds one
+per chunk and in Finalize. The write transaction then rolls back with the
+DuckDB statement.
 
 XSQLDA buffers are owned by `FirebirdStatement` and reused across every
 `isc_dsql_fetch`. BLOBs go through a separate `isc_open_blob2` /

@@ -22,7 +22,11 @@ cursor que ordena, ou o fetch de uma linha que o servidor ainda calcula.
 Os scans e o `firebird_query` terminam em uma fracao de segundo (cerca de
 um segundo no maximo, quando o servidor nao responde ao cancelamento) com o
 erro "Interrupted!" do DuckDB, em vez de esperar o servidor terminar. A conexao
-em que o pedido rodava sai do pool.
+em que o pedido rodava sai do pool. Escritas tambem: um `firebird_execute`
+interrompido (um comando longo, ou um laco de `source`) ou um `INSERT INTO
+fb.main.T` para em uma fracao de segundo, e sua transacao de escrita e
+desfeita com o comando DuckDB (linhas que um `commit_every` anterior
+confirmou ficam).
 
 ## Requisito de runtime
 
