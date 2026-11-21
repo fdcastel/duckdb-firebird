@@ -49,6 +49,7 @@ struct FirebirdClientApi {
     void *(*fb_get_master_interface)();
     decltype(&::fb_get_statement_interface)  fb_get_statement_interface;
     decltype(&::fb_get_transaction_interface) fb_get_transaction_interface;
+    decltype(&::fb_cancel_operation)         fb_cancel_operation;
 };
 
 // Resolve the Firebird client library (once per process) and return

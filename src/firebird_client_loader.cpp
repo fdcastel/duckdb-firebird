@@ -124,6 +124,7 @@ static void BindSymbols(FirebirdClientApi &api,
         PlatformSym(handle, "fb_get_statement_interface"));
     api.fb_get_transaction_interface = reinterpret_cast<decltype(api.fb_get_transaction_interface)>(
         PlatformSym(handle, "fb_get_transaction_interface"));
+    BIND(fb_cancel_operation);
     // Optional: only firebird_health().client_version uses it.
     api.isc_get_client_version = reinterpret_cast<decltype(api.isc_get_client_version)>(
         PlatformSym(handle, "isc_get_client_version"));

@@ -61,6 +61,7 @@ set(EXTENSION_SOURCES
     src/firebird_param_encoder.cpp
     src/firebird_insert.cpp
     src/firebird_batch.cpp
+    src/firebird_cancel.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
