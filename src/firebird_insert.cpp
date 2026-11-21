@@ -40,9 +40,22 @@ const std::string &Str(const std::string &name) {
     return name;
 }
 
-struct FirebirdInsertGlobalState : public GlobalSinkState {
+// The Firebird objects an INSERT keeps on the write connection between its
+// steps. They must go before the connection does: Finalize releases them,
+// and the write transaction releases them before its connection goes back
+// to the pool on every other path (an error, a failing source).
+struct FirebirdInsertResources : public FirebirdWriteResources {
     std::unique_ptr<FirebirdStatement> stmt;
     std::unique_ptr<FirebirdParamEncoder> encoder;
+
+    void ReleaseFirebird() override {
+        encoder.reset();
+        stmt.reset();
+    }
+};
+
+struct FirebirdInsertGlobalState : public GlobalSinkState {
+    std::shared_ptr<FirebirdInsertResources> res = std::make_shared<FirebirdInsertResources>();
     int64_t rows = 0;  // rows inserted (executed)
     // For the telemetry record, made when the INSERT ends: a Firebird scan
     // in its source records itself while the INSERT runs.
@@ -91,9 +104,10 @@ public:
         PinFirebirdWrites(context, catalog_);
         auto &conn = GetFirebirdWriteConnection(context, catalog_, lock_timeout_s);
         state->connection_id = conn.Id();
+        HoldFirebirdWriteResources(context, catalog_, state->res);
         try {
-            state->stmt = make_uniq<FirebirdStatement>(conn, sql_, FirebirdStatement::PrepareOnlyTag {});
-            state->encoder = make_uniq<FirebirdParamEncoder>(*state->stmt, value_types_, none_encoding_);
+            state->res->stmt = make_uniq<FirebirdStatement>(conn, sql_, FirebirdStatement::PrepareOnlyTag {});
+            state->res->encoder = make_uniq<FirebirdParamEncoder>(*state->res->stmt, value_types_, none_encoding_);
         } catch (std::exception &ex) {
             Fail(context, *state, "INSERT into Firebird table \"" + table_name_ + "\": " + ErrorData(ex).RawMessage());
         }
@@ -106,8 +120,8 @@ public:
         const auto t0 = std::chrono::steady_clock::now();
         for (idx_t r = 0; r < chunk.size(); ++r) {
             try {
-                state.encoder->Encode(chunk, r, input_columns_);
-                state.stmt->ExecuteWithInput(sql_);
+                state.res->encoder->Encode(chunk, r, input_columns_);
+                state.res->stmt->ExecuteWithInput(sql_);
             } catch (std::exception &ex) {
                 AddTime(state, t0);
                 FailRow(context.client, state, state.rows + 1, ErrorData(ex).RawMessage());
@@ -124,6 +138,9 @@ public:
         auto writes = LockFirebirdWrites(context, catalog_);
         UnpinFirebirdWrites(context, catalog_);
         Report(context, state, "");
+        // The statement goes before the connection does (the transaction
+        // releases it too, on every other path).
+        state.res->ReleaseFirebird();
         return SinkFinalizeType::READY;
     }
 

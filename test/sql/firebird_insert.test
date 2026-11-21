@@ -318,6 +318,50 @@ SELECT (SELECT count(*) FROM firebird_query('ro', 'SELECT ID FROM RW_TARGET WHER
 ----
 1	1
 
+# commit_every would commit the INSERT's rows mid-statement: refused there.
+statement error
+INSERT INTO rw.main.RW_TARGET (ID)
+SELECT executions + 700000 FROM firebird_execute('rw', 'INSERT INTO RW_LOG (ID, NOTE) VALUES (?, ?)',
+    source := 'SELECT -70, ''x''', commit_every := 1);
+----
+commit_every can't run inside an INSERT into the same ATTACH
+
+# --- The INSERT's statement goes before its connection -------------------------------
+# With the pool disabled a released write connection is closed at once; the
+# INSERT's prepared statement is freed first, also when a row fails.
+
+statement ok
+SET firebird_pool_enabled = false;
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw_nopool (TYPE firebird, READ_WRITE);
+
+query I
+INSERT INTO rw_nopool.main.RW_LOG VALUES (-81, 'no pool'), (-82, 'no pool');
+----
+2
+
+statement error
+INSERT INTO rw_nopool.main.CUSTOMER (ID, NAME) VALUES (81, 'a'), (81, 'b');
+----
+row 2 failed
+
+query I
+INSERT INTO rw_nopool.main.RW_LOG VALUES (-83, 'no pool');
+----
+1
+
+query I
+SELECT count(*) FROM firebird_query('ro', 'SELECT ID FROM RW_LOG WHERE ID IN (-81, -82, -83)');
+----
+3
+
+statement ok
+DETACH rw_nopool;
+
+statement ok
+SET firebird_pool_enabled = true;
+
 statement ok
 SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_LOG');
 

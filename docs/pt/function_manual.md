@@ -923,7 +923,10 @@ INSERT INTO fb.main.CUSTOMER (NAME, ID) VALUES ('Fa', 6);
   linhas do INSERT.
 - **Alimentado por `firebird_execute`.** Um `INSERT ... SELECT ... FROM
   firebird_execute(...)` no mesmo ATTACH compartilha uma transacao de
-  escrita, confirmada quando o comando termina.
+  escrita, confirmada quando o comando termina, quando as linhas da chamada
+  vao direto para o INSERT; com um `ORDER BY` ou uma agregacao no meio, o
+  DuckDB 2.0 pode rodar a chamada antes, e ela entao confirma a propria
+  escrita. `commit_every` e recusado ali.
 - **Numa transacao.** Entre `BEGIN` e `COMMIT`, os scans do ATTACH ainda
   nao veem as linhas inseridas (leem nas proprias conexoes), e, como em
   qualquer transacao DuckDB, a transacao escreve em um unico banco anexado.

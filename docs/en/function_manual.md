@@ -668,7 +668,10 @@ COPY fb.main.CUSTOMER FROM 'customers.csv' (HEADER);
   every row of the INSERT.
 - **Fed by `firebird_execute`.** An `INSERT ... SELECT ... FROM
   firebird_execute(...)` on the same ATTACH shares one write transaction,
-  committed when the statement ends.
+  committed when the statement ends, when the call's rows go straight into
+  the INSERT; with an `ORDER BY` or an aggregate in between, DuckDB 2.0 may
+  run the call first, and it then commits its own write. `commit_every` is
+  refused there.
 - **In a transaction.** Between `BEGIN` and `COMMIT`, scans of the ATTACH
   don't see the inserted rows yet (they read on their own connections),
   and, as for any DuckDB transaction, the transaction writes to one
