@@ -431,6 +431,7 @@ jobs:
           ./build/release/test/unittest test/sql/firebird_execute.test
           ./build/release/test/unittest test/sql/firebird_ddl_cache.test
           ./build/release/test/unittest test/sql/firebird_session_reset.test || echo "PROOF-FAIL session_reset"
+          ./build/release/test/unittest test/sql/proof48_query.test || echo "PROOF-FAIL proof48_query"
 
       - name: Writes commit when a client reads one row and closes (Python)
         # sqllogictest reads every result fully; this needs a real client
