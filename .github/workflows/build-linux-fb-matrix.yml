@@ -510,6 +510,34 @@ jobs:
           }
           ./build/release/test/unittest test/sql/firebird_health.test
 
+      - name: EXPLORE Firebird 3 client against a Firebird 4+ server
+        if: matrix.fb_major != '3' && matrix.duckdb == 'v2.0.1'
+        run: |
+          docker run -d --name fb3client --entrypoint sleep firebirdsql/firebird:3-noble infinity
+          trap 'docker rm -f fb3client >/dev/null 2>&1 || true' EXIT
+          LIB_IN_CONTAINER=$(docker exec fb3client sh -c "find / -xdev -name 'libfbclient.so*' 2>/dev/null | head -1")
+          echo "found $LIB_IN_CONTAINER in the FB3 image"
+          FB3_DIR="$PWD/fbclient-fb3-on-fb${{ matrix.fb_major }}"
+          mkdir -p "$FB3_DIR"
+          docker exec fb3client sh -c "ldd '$LIB_IN_CONTAINER'" \
+            | grep -oE '/[^ ]+' | sort -u \
+            | grep -vE '/(libc|libpthread|libm|libdl|librt|ld-linux)[.-]' \
+            | while read -r dep; do
+                docker cp -L "fb3client:$dep" "$FB3_DIR/$(basename "$dep")" 2>/dev/null || true
+              done
+          docker cp -L "fb3client:$LIB_IN_CONTAINER" "$FB3_DIR/$(basename "$LIB_IN_CONTAINER")"
+          ls -l "$FB3_DIR"
+          export DUCKDB_FIREBIRD_CLIENT_LIBRARY="$FB3_DIR/$(basename "$LIB_IN_CONTAINER")"
+          export LD_LIBRARY_PATH="$FB3_DIR"
+          { echo "ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);"; cat scripts/explore_fb3_client.sql; } \
+            | ./build/release/duckdb 2>&1 | sed 's/^/EXPLORE| /' || true
+          for t in firebird_execute firebird_execute_source firebird_insert firebird_execute_batch firebird_query firebird_scan firebird_ddl_cache firebird_bind_params; do
+            if [ -f "test/sql/$t.test" ]; then
+              ./build/release/test/unittest "test/sql/$t.test" > "/tmp/fb3c_$t.log" 2>&1 && echo "EXPLORE-OK $t" || { echo "EXPLORE-FAIL $t"; grep -E "FAILED|Mismatch|Actual|Expected|rror" "/tmp/fb3c_$t.log" | head -12 | sed "s/^/EXPLORE-$t| /"; }
+            fi
+          done
+          exit 1
+
       - name: Shared-snapshot consistency under a concurrent writer
         env:
           ISC_USER: SYSDBA
