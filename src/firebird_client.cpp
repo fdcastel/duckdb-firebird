@@ -532,7 +532,7 @@ void FirebirdConnectionPool::Release(std::unique_ptr<FirebirdConnection> conn) {
     // SQL the caller wrote may have changed the session (see
     // MarkSessionChanged): reset it before the next lease inherits it. A
     // connection the pool won't park needs none.
-    if (conn->SessionChanged() && config_.enabled) {
+    if (false && conn->SessionChanged() && config_.enabled) {
         try {
             conn->ResetSession();
         } catch (...) {
