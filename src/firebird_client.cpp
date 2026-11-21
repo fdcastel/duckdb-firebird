@@ -48,6 +48,7 @@
 #define isc_commit_transaction       (::duckdb::fbapi().isc_commit_transaction)
 #define isc_create_blob2             (::duckdb::fbapi().isc_create_blob2)
 #define isc_put_segment              (::duckdb::fbapi().isc_put_segment)
+#define fb_cancel_operation          (::duckdb::fbapi().fb_cancel_operation)
 
 namespace duckdb {
 
@@ -982,6 +983,12 @@ int FirebirdConnection::EngineMajor() {
 
 std::string FirebirdStatusText(const ISC_STATUS *status) {
     return StatusText(status);
+}
+
+void FirebirdConnection::CancelOperation(bool abort) {
+    broken_.store(true, std::memory_order_relaxed);
+    ISC_STATUS status[20] = {};
+    fb_cancel_operation(status, &db_, abort ? fb_cancel_abort : fb_cancel_raise);
 }
 
 std::unique_ptr<FirebirdStatement> FirebirdConnection::OpenCursor(const std::string &sql) {
