@@ -643,9 +643,12 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                         }
                     } catch (std::exception &ex) {
                         // The rows before it go first, so a failure among
-                        // them is named, as one row at a time would.
+                        // them is named, as one row at a time would; not on
+                        // a connection the error showed is gone.
                         const std::string error = ErrorData(ex).RawMessage();
-                        flush();
+                        if (!conn.IsBroken()) {
+                            flush();
+                        }
                         fail(added + 1, error);
                     }
                     ++added;
@@ -672,7 +675,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                         } catch (std::exception &ex) {
                             throw InvalidInputException("%s: the write transaction after source row %lld "
                                                         "could not start: %s%s",
-                                                        kFunctionName, static_cast<long long>(executions),
+                                                        kFunctionName, static_cast<long long>(added),
                                                         ErrorData(ex).RawMessage(), kept());
                         }
                     }

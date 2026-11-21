@@ -282,15 +282,35 @@ FirebirdBatchWriter::Result FirebirdBatchWriter::Execute() {
         return r;
     }
     const unsigned size = cs->getSize(status);
+    if (Failed(*status)) {
+        cs->dispose();
+        r.failed = true;
+        r.whole_batch = true;
+        r.error = "IBatchCompletionState::getSize: " + StatusErrors(*status);
+        return r;
+    }
     r.affected = d.count_rows ? 0 : -1;
     for (unsigned p = 0; p < size; ++p) {
         const int state = cs->getState(status, p);
+        if (Failed(*status)) {
+            r.failed = true;
+            r.failed_index = p;
+            r.error = "IBatchCompletionState::getState: " + StatusErrors(*status);
+            break;
+        }
         if (state == Firebird::IBatchCompletionState::EXECUTE_FAILED) {
             Firebird::CheckStatusWrapper err(d.master->getStatus());
             cs->getStatus(status, &err, p);
             r.failed = true;
             r.failed_index = p;
-            r.error = StatusErrors(err);
+            if (Failed(*status)) {
+                r.error = "IBatchCompletionState::getStatus: " + StatusErrors(*status);
+            } else {
+                // A message can also fail because the attachment went away
+                // (a kill, a shutdown): note it as on the per-row path.
+                d.conn->NoteStatus(reinterpret_cast<const ISC_STATUS *>(err.getErrors()));
+                r.error = StatusErrors(err);
+            }
             err.dispose();
             break;
         }

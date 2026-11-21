@@ -153,9 +153,12 @@ public:
                 }
             } catch (std::exception &ex) {
                 // The rows before it go first, so a failure among them is
-                // named, as one row at a time would.
+                // named, as one row at a time would; not on a connection the
+                // error showed is gone.
                 const std::string error = ErrorData(ex).RawMessage();
-                Flush(context.client, state, t0);
+                if (!state.res->stmt->Connection().IsBroken()) {
+                    Flush(context.client, state, t0);
+                }
                 AddTime(state, t0);
                 FailRow(context.client, state, state.added + 1, error);
             }

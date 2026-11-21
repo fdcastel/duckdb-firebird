@@ -105,7 +105,15 @@ if(FB_SDK_ROOT)
             "FB_SDK_ROOT=${FB_SDK_ROOT} did not yield ibase.h; "
             "falling back to vendored third_party/firebird headers.")
     else()
-        file(STRINGS "${FB_INCLUDE_DIR}/ibase.h" FB_HAS_STATEMENT_INTERFACE REGEX "fb_get_statement_interface")
+        # Firebird 4 declares it in ibase.h; since Firebird 5, ibase.h only
+        # includes firebird/ibase.h, which declares it.
+        set(FB_HAS_STATEMENT_INTERFACE "")
+        foreach(FB_HEADER "${FB_INCLUDE_DIR}/ibase.h" "${FB_INCLUDE_DIR}/firebird/ibase.h")
+            if(EXISTS "${FB_HEADER}" AND NOT FB_HAS_STATEMENT_INTERFACE)
+                file(STRINGS "${FB_HEADER}" FB_HAS_STATEMENT_INTERFACE
+                     REGEX "ISC_EXPORT fb_get_statement_interface")
+            endif()
+        endforeach()
         if(NOT FB_HAS_STATEMENT_INTERFACE)
             message(FATAL_ERROR
                 "FB_SDK_ROOT=${FB_SDK_ROOT}: ibase.h has no fb_get_statement_interface, so it is older "
