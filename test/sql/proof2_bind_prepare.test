@@ -1,0 +1,16 @@
+# name: test/sql/proof2_bind_prepare.test
+# description: proof (fork only): bind-time prepare error hides the password
+# group: [firebird]
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);
+
+statement error
+SELECT * FROM firebird_execute('rw', 'EXECUTE BLOCK (X INTEGER = ?) AS DECLARE N INTEGER; BEGIN EXECUTE STATEMENT ''SELECT 1 FROM RDB$DATABASE'' ON EXTERNAL ''localhost:/no/such.fdb'' AS USER ''SYSDBA'' PASSWORD ''s3cret-p2b'' INTO :NO_SUCH_VARIABLE; END',
+    source := 'SELECT 1');
+----
+<!REGEX>:(?s).*s3cret.*

@@ -1,0 +1,13 @@
+# name: test/sql/proof2_pushdown_date.test
+# description: proof (fork only): out-of-range date stays a DuckDB filter
+# group: [firebird]
+
+require firebird
+
+require-env FIREBIRD_TEST_DB
+
+query I
+SELECT count(*) FROM firebird_scan('${FIREBIRD_TEST_DB}', 'EMPLOYEE')
+ WHERE HIRE_DATE < make_date(10000, 1, 1);
+----
+5

@@ -335,9 +335,8 @@ static void LoadInternal(ExtensionLoader &loader) {
         LogicalType::BIGINT,
         Value::BIGINT(-1));
 
-    // Rows per batch for Firebird 4+ writes (IBatch), checked when it is set.
-    // (A value given when the database is opened skips the check: INSERT then
-    // runs per row and firebird_execute fails at bind.)
+    // Rows per batch for Firebird 4+ writes (IBatch); checked when it is set,
+    // so INSERT and firebird_execute never see a negative value.
     config.AddExtensionOption(
         "firebird_write_batch_size",
         "Rows per batch for Firebird writes (firebird_execute with source, INSERT into an ATTACH opened "

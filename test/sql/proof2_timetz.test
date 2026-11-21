@@ -1,0 +1,16 @@
+# name: test/sql/proof2_timetz.test
+# description: proof (fork only): TIMETZ 24:00 refused
+# group: [firebird]
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);
+
+statement error
+SELECT * FROM firebird_execute('rw', 'INSERT INTO RW_TARGET (ID, C_TIME) VALUES (?, ?)',
+    source := $$SELECT 998, '24:00:00+00'::TIMETZ$$);
+----
+<REGEX>:.*(TIME '24:00:00' is outside Firebird's times|Conversion Error).*

@@ -986,21 +986,9 @@ public:
     // fails either is discarded; a failed commit throws.
     void EndWrite(bool commit) {
         std::unique_ptr<FirebirdConnection> conn;
-        std::vector<std::weak_ptr<FirebirdWriteResources>> resources;
         {
             std::lock_guard<std::mutex> g(write_lock_);
             conn = std::move(write_conn_);
-            resources.swap(write_resources_);
-        }
-        // Statements prepared on the connection go first: a statement must
-        // not outlive its connection, and Release may close it.
-        for (auto &weak : resources) {
-            if (auto held = weak.lock()) {
-                try {
-                    held->ReleaseFirebird();
-                } catch (...) {
-                }
-            }
         }
         if (!conn) {
             return;
@@ -1046,12 +1034,6 @@ public:
     bool WritesPinned() {
         std::lock_guard<std::mutex> g(write_lock_);
         return write_pins_ > 0;
-    }
-
-    // See HoldFirebirdWriteResources.
-    void HoldResources(const std::shared_ptr<FirebirdWriteResources> &resources) {
-        std::lock_guard<std::mutex> g(write_lock_);
-        write_resources_.push_back(resources);
     }
 
 
@@ -1257,7 +1239,6 @@ private:
     std::mutex write_lock_;
     std::mutex write_use_lock_;
     int64_t write_pins_ = 0;
-    std::vector<std::weak_ptr<FirebirdWriteResources>> write_resources_;
     std::unique_ptr<FirebirdConnection> write_conn_;
     std::string catalog_name_;
     std::shared_ptr<std::atomic<bool>> no_snapshot_numbers_;
@@ -1574,15 +1555,6 @@ FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &
 std::unique_lock<std::mutex> LockFirebirdWrites(ClientContext &context, Catalog &catalog) {
     auto &tx = Transaction::Get(context, catalog).Cast<FirebirdTransaction>();
     return std::unique_lock<std::mutex>(tx.WriteUseLock());
-}
-
-void HoldFirebirdWriteResources(ClientContext &context, Catalog &catalog,
-                                const std::shared_ptr<FirebirdWriteResources> &resources) {
-    Transaction::Get(context, catalog).Cast<FirebirdTransaction>().HoldResources(resources);
-}
-
-bool FirebirdWritesPinned(ClientContext &context, Catalog &catalog) {
-    return Transaction::Get(context, catalog).Cast<FirebirdTransaction>().WritesPinned();
 }
 
 void PinFirebirdWrites(ClientContext &context, Catalog &catalog) {

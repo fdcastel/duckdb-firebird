@@ -1,6 +1,5 @@
 #pragma once
 
-#include <memory>
 #include <mutex>
 
 #include "duckdb.hpp"
@@ -37,22 +36,6 @@ FirebirdConnection &GetFirebirdWriteConnection(ClientContext &context, Catalog &
 // other (one DuckDB transaction is one Firebird transaction, so a second
 // connection would not see the first call's rows nor share its locks).
 std::unique_lock<std::mutex> LockFirebirdWrites(ClientContext &context, Catalog &catalog);
-
-// Firebird objects an operator keeps on the write connection across its
-// steps (an INSERT's prepared statement): the write transaction releases
-// them before the connection goes back to the pool, unless the operator did.
-class FirebirdWriteResources {
-public:
-    virtual ~FirebirdWriteResources() = default;
-    virtual void ReleaseFirebird() = 0;
-};
-
-// The transaction keeps a weak reference: an operator gone first is skipped.
-void HoldFirebirdWriteResources(ClientContext &context, Catalog &catalog,
-                                const std::shared_ptr<FirebirdWriteResources> &resources);
-
-// Whether an INSERT has the write connection pinned (see PinFirebirdWrites).
-bool FirebirdWritesPinned(ClientContext &context, Catalog &catalog);
 
 // An INSERT keeps a statement prepared on the write connection from its
 // first step to its last. While one is open, CommitFirebirdWriteNow does

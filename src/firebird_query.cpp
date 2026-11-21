@@ -1,5 +1,4 @@
 #include "firebird_query.hpp"
-#include "firebird_param_encoder.hpp"
 #include "firebird_types.hpp"
 
 #include <sstream>
@@ -190,7 +189,7 @@ static bool TranslateComparison(const std::string &column_name,
         // never emit a predicate Firebird would read as an IS-NOT-NULL.
         return false;
     }
-    if (IsBindableType(constant.type()) && FirebirdCanBindValue(constant)) {
+    if (IsBindableType(constant.type())) {
         out = column_name + " " + op + " ?";
         params_out.push_back(constant);
         return true;
@@ -228,7 +227,7 @@ static bool TranslateInList(const std::string &column_name,
     std::string acc = column_name + " IN (";
     for (size_t i = 0; i < values.size(); ++i) {
         if (i) acc += ", ";
-        if (IsBindableType(values[i].type()) && FirebirdCanBindValue(values[i])) {
+        if (IsBindableType(values[i].type())) {
             acc += "?";
             params_out.push_back(values[i]);
             continue;
@@ -354,7 +353,7 @@ static bool TranslateFilter(const std::string &column_name,
         auto &c = filter.Cast<LegacyConstantFilter>();
         const char *op = ComparisonToSql(c.comparison_type);
         if (!op) return false;
-        if (IsBindableType(c.constant.type()) && FirebirdCanBindValue(c.constant)) {
+        if (IsBindableType(c.constant.type())) {
             out = column_name + " " + op + " ?";
             params_out.push_back(c.constant);
             return true;
@@ -415,7 +414,7 @@ static bool TranslateFilter(const std::string &column_name,
         std::string acc = column_name + " IN (";
         for (size_t i = 0; i < c.values.size(); ++i) {
             if (i) acc += ", ";
-            if (IsBindableType(c.values[i].type()) && FirebirdCanBindValue(c.values[i])) {
+            if (IsBindableType(c.values[i].type())) {
                 acc += "?";
                 params_out.push_back(c.values[i]);
                 continue;

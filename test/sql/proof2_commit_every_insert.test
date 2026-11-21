@@ -1,0 +1,17 @@
+# name: test/sql/proof2_commit_every_insert.test
+# description: proof (fork only): commit_every refused inside an INSERT
+# group: [firebird]
+
+require firebird
+
+require-env FIREBIRD_RW_DB
+
+statement ok
+ATTACH '${FIREBIRD_RW_DB}' AS rw (TYPE firebird, READ_WRITE);
+
+statement error
+INSERT INTO rw.main.RW_TARGET (ID)
+SELECT executions + 997000 FROM firebird_execute('rw', 'INSERT INTO RW_LOG (ID, NOTE) VALUES (?, ?)',
+    source := 'SELECT -997, ''x''', commit_every := 1);
+----
+commit_every can't run inside an INSERT into the same ATTACH

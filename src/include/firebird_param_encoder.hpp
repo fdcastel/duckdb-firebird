@@ -9,12 +9,6 @@
 
 namespace duckdb {
 
-// False for a value Firebird can't hold as a parameter of its type: a date
-// outside 0001-01-01 to 9999-12-31, TIME '24:00:00', an infinite date or
-// timestamp. Scan filter pushdown leaves such a constant to DuckDB instead
-// of failing the scan.
-bool FirebirdCanBindValue(const Value &value);
-
 // Encodes DuckDB values into the input parameters of a prepared Firebird
 // statement, one row at a time.
 //

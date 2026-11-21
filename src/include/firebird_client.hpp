@@ -90,10 +90,6 @@ void ValidateMaxInlineBlobSize(int64_t bytes);
 // returns "" when the library doesn't export isc_get_client_version.
 std::string FirebirdClientVersion();
 
-// Major version of the loaded client library (FirebirdClientVersion), read
-// once; 0 when it can't be told.
-int FirebirdClientMajor();
-
 // isc_interprete'd text of an error status vector.
 std::string FirebirdStatusText(const ISC_STATUS *status);
 

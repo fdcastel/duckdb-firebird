@@ -18,9 +18,10 @@
 // Returns one row: rows_affected (inserted + updated + deleted, as Firebird
 // reports them; NULL with count_rows := false) and executions.
 
-#include <algorithm>
+#include <cctype>
 #include <cctype>
 #include <chrono>
+#include <regex>
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/database_modification_type.hpp"
@@ -140,133 +141,33 @@ void CheckSessionStatement(const std::string &sql) {
     }
 }
 
-// A string literal of a statement: its span in the SQL (quotes included)
-// and its text, with '' undone.
-struct SqlLiteral {
-    size_t begin;
-    size_t end;
-    std::string text;
-};
-
-bool IsSqlWordChar(char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
-}
-
-// Reads a statement the way Firebird's lexer does for what matters here:
-// comments, quoted identifiers, '...' and q'...' literals. Returns the
-// literals, and in password_word whether the word PASSWORD appears outside
-// them.
-std::vector<SqlLiteral> ScanSqlLiterals(const std::string &sql, bool &password_word) {
-    std::vector<SqlLiteral> out;
-    password_word = false;
-    const size_t n = sql.size();
-    size_t i = 0;
-    while (i < n) {
-        const char c = sql[i];
-        if (c == '-' && i + 1 < n && sql[i + 1] == '-') {
-            while (i < n && sql[i] != '\n') {
-                ++i;
-            }
-        } else if (c == '/' && i + 1 < n && sql[i + 1] == '*') {
-            const auto close = sql.find("*/", i + 2);
-            i = close == std::string::npos ? n : close + 2;
-        } else if (c == '"') {
-            for (++i; i < n; ++i) {
-                if (sql[i] == '"') {
-                    if (i + 1 < n && sql[i + 1] == '"') {
-                        ++i;
-                        continue;
-                    }
-                    ++i;
-                    break;
-                }
-            }
-        } else if ((c == 'q' || c == 'Q') && i + 2 < n && sql[i + 1] == '\'' &&
-                   (i == 0 || !IsSqlWordChar(sql[i - 1]))) {
-            // q'<x>...<x>', with (), [], {} or <> as pairs.
-            const char open = sql[i + 2];
-            const char close = open == '(' ? ')' : open == '[' ? ']' : open == '{' ? '}' : open == '<' ? '>' : open;
-            size_t j = i + 3;
-            while (j < n && !(sql[j] == close && j + 1 < n && sql[j + 1] == '\'')) {
-                ++j;
-            }
-            const size_t end = j < n ? j + 2 : n;
-            out.push_back({i, end, sql.substr(i + 3, (j < n ? j : n) - (i + 3))});
-            i = end;
-        } else if (c == '\'') {
-            std::string text;
-            size_t j = i + 1;
-            while (j < n) {
-                if (sql[j] == '\'') {
-                    if (j + 1 < n && sql[j + 1] == '\'') {
-                        text += '\'';
-                        j += 2;
-                        continue;
-                    }
-                    break;
-                }
-                text += sql[j++];
-            }
-            const size_t end = j < n ? j + 1 : n;
-            out.push_back({i, end, text});
-            i = end;
-        } else if (IsSqlWordChar(c)) {
-            const size_t start = i;
-            while (i < n && IsSqlWordChar(sql[i])) {
-                ++i;
-            }
-            if (StringUtil::CIEquals(sql.substr(start, i - start), "PASSWORD")) {
-                password_word = true;
-            }
-        } else {
-            ++i;
-        }
-    }
-    return out;
-}
-
-// The SQL as the query log and error messages show it. When the statement
-// mentions PASSWORD anywhere, also inside a literal (an EXECUTE STATEMENT
-// of a CREATE USER), every string literal becomes '***': a password can sit
-// in any of them, nested or not. secrets gets what an error message could
-// quote: each literal as written (quotes included), its text when at least
-// 4 characters long (a nested statement), and the literals of a nested
-// statement that mentions PASSWORD; longest first.
+// The SQL as the query log and error messages show it: every literal after
+// PASSWORD (CREATE / ALTER USER, EXECUTE STATEMENT ... PASSWORD) becomes
+// '***'. secrets gets each literal's text, as written and with '' undone.
 std::string RedactPasswords(const std::string &sql, std::vector<std::string> &secrets) {
-    bool password_word;
-    const auto literals = ScanSqlLiterals(sql, password_word);
-    bool mentioned = password_word;
-    for (auto &literal : literals) {
-        if (StringUtil::Contains(StringUtil::Upper(literal.text), "PASSWORD")) {
-            mentioned = true;
-        }
-    }
-    if (!mentioned) {
-        return sql;
-    }
+    static const std::regex kPassword(R"(\bPASSWORD(\s+)'((?:[^']|'')*)')",
+                                      std::regex::ECMAScript | std::regex::icase);
     std::string out;
-    size_t last = 0;
-    for (auto &literal : literals) {
-        out.append(sql, last, literal.begin - last);
-        out += "'***'";
-        last = literal.end;
-        if (!literal.text.empty()) {
-            secrets.push_back(sql.substr(literal.begin, literal.end - literal.begin));
+    auto last = sql.cbegin();
+    for (std::sregex_iterator it(sql.cbegin(), sql.cend(), kPassword), end; it != end; ++it) {
+        const auto &m = *it;
+        out.append(last, m[0].first);
+        out += m.str(0).substr(0, 8) + m.str(1) + "'***'";
+        const std::string written = m.str(2);
+        if (!written.empty()) {
+            secrets.push_back(written);
+            const std::string plain = StringUtil::Replace(written, "''", "'");
+            if (plain != written) {
+                secrets.push_back(plain);
+            }
         }
-        if (literal.text.size() >= 4) {
-            secrets.push_back(literal.text);
-        }
-        if (StringUtil::Contains(StringUtil::Upper(literal.text), "PASSWORD")) {
-            RedactPasswords(literal.text, secrets);
-        }
+        last = m[0].second;
     }
-    out.append(sql, last, std::string::npos);
-    std::sort(secrets.begin(), secrets.end(),
-              [](const std::string &a, const std::string &b) { return a.size() > b.size(); });
+    out.append(last, sql.cend());
     return out;
 }
 
-// An error message with the SQL and its literals hidden (see RedactPasswords).
+// An error message with the SQL and its password literals hidden.
 std::string RedactMessage(const std::string &message, const FirebirdExecuteBindData &bind) {
     std::string out = StringUtil::Replace(message, bind.sql, bind.logged_sql);
     for (auto &secret : bind.secrets) {
@@ -403,13 +304,8 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
                 FirebirdStatement stmt(*conn, bind->sql, FirebirdStatement::PrepareOnlyTag {});
                 CheckStatementType(stmt, false);
                 param_count = stmt.DescribeInput().size();
-            } catch (std::exception &ex) {
+            } catch (...) {
                 bind->attach.pool->Release(std::move(conn));
-                // A prepare error quotes the statement: hide its literals too.
-                if (bind->logged_sql != bind->sql) {
-                    ErrorData error(ex);
-                    ErrorData(error.Type(), RedactMessage(error.RawMessage(), *bind)).Throw();
-                }
                 throw;
             }
             bind->attach.pool->Release(std::move(conn));
@@ -450,13 +346,6 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
     if (bind.commit_every > 0 && !context.transaction.IsAutoCommit()) {
         throw InvalidInputException("%s: commit_every needs autocommit; inside BEGIN ... COMMIT its commits would "
                                     "also commit the transaction's earlier writes",
-                                    kFunctionName);
-    }
-    // Inside an INSERT into the same ATTACH (INSERT ... SELECT ... FROM
-    // firebird_execute(...)), the INSERT's rows share the write transaction.
-    if (bind.commit_every > 0 && FirebirdWritesPinned(context, *bind.attach.catalog)) {
-        throw InvalidInputException("%s: commit_every can't run inside an INSERT into the same ATTACH: its "
-                                    "commits would also commit the INSERT's rows",
                                     kFunctionName);
     }
 
@@ -618,14 +507,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                     // of this statement), so a column now of another type
                     // would be misread (5 read as 0.05).
                     const auto &now = chunk->GetTypes();
-                    if (now.size() != bind.source_types.size()) {
-                        throw InvalidInputException("%s: the source query returned %llu column(s) when the call was "
-                                                    "bound and returns %llu now; prepare the statement again.%s",
-                                                    kFunctionName,
-                                                    static_cast<unsigned long long>(bind.source_types.size()),
-                                                    static_cast<unsigned long long>(now.size()), kept());
-                    }
-                    for (idx_t c = 0; c < now.size(); ++c) {
+                    for (idx_t c = 0; c < now.size() && c < bind.source_types.size(); ++c) {
                         if (now[c] != bind.source_types[c]) {
                             throw InvalidInputException(
                                 "%s: source column %llu was %s when the call was bound and is %s now; "
@@ -649,12 +531,9 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                         }
                     } catch (std::exception &ex) {
                         // The rows before it go first, so a failure among
-                        // them is named, as one row at a time would; not on
-                        // a connection the error showed is gone.
+                        // them is named, as one row at a time would.
                         const std::string error = ErrorData(ex).RawMessage();
-                        if (!conn.IsBroken()) {
-                            flush();
-                        }
+                        flush();
                         fail(added + 1, error);
                     }
                     ++added;
@@ -681,7 +560,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
                         } catch (std::exception &ex) {
                             throw InvalidInputException("%s: the write transaction after source row %lld "
                                                         "could not start: %s%s",
-                                                        kFunctionName, static_cast<long long>(added),
+                                                        kFunctionName, static_cast<long long>(executions),
                                                         ErrorData(ex).RawMessage(), kept());
                         }
                     }
@@ -706,13 +585,12 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
 #endif
     } catch (std::exception &ex) {
         ErrorData error(ex);
-        const bool redact = bind.logged_sql != bind.sql;
-        if (redact) {
+        if (!bind.secrets.empty()) {
             error = ErrorData(error.Type(), RedactMessage(error.RawMessage(), bind));
         }
         obs->SetWriteResult(write_mode, executions, -1);
         obs->SetError(error.RawMessage());
-        if (redact) {
+        if (!bind.secrets.empty()) {
             error.Throw();
         }
         throw;

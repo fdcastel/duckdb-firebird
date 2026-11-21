@@ -364,15 +364,6 @@ std::string FirebirdClientVersion() {
     return major_minor + "." + impl[2] + "." + impl[3];
 }
 
-int FirebirdClientMajor() {
-    static const int major = [] {
-        const auto version = FirebirdClientVersion();
-        return version.empty() || !std::isdigit(static_cast<unsigned char>(version[0])) ? 0
-                                                                                       : std::atoi(version.c_str());
-    }();
-    return major;
-}
-
 int64_t FirebirdConnection::MaxInlineBlobSize() {
     char items[] = {static_cast<char>(fb_info_max_inline_blob_size), isc_info_end};
     char buf[32] = {};
@@ -968,17 +959,18 @@ void FirebirdConnection::RollbackWrite() {
 }
 
 int FirebirdConnection::EngineMajor() {
-    // Only a successful read is kept: a failed one is tried again next time.
-    if (engine_major_ <= 0) {
+    if (engine_major_ < 0) {
+        engine_major_ = 0;
         try {
             auto cur = OpenCursor("SELECT RDB$GET_CONTEXT('SYSTEM', 'ENGINE_VERSION') FROM RDB$DATABASE");
             if (cur->Fetch() && !cur->IsNull(0)) {
                 engine_major_ = std::atoi(cur->GetText(0).c_str());
             }
         } catch (...) {
+            engine_major_ = 0;
         }
     }
-    return engine_major_ > 0 ? engine_major_ : 0;
+    return engine_major_;
 }
 
 std::string FirebirdStatusText(const ISC_STATUS *status) {
