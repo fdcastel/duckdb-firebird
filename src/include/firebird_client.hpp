@@ -487,6 +487,13 @@ public:
     // discards such a connection instead of parking it.
     bool IsBroken() const { return broken_.load(std::memory_order_relaxed); }
 
+    // Cancels the request running on this attachment. Called from another
+    // thread (fb_cancel_operation is made for that, see FirebirdCancelGuard);
+    // the running call fails with "operation was cancelled". The connection
+    // is marked broken first, so the pool drops it instead of handing it out
+    // again.
+    void CancelOperation();
+
 private:
     FirebirdConnectionInfo info_;
     isc_db_handle db_ = 0;
