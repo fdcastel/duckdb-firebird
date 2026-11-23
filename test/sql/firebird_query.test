@@ -201,6 +201,17 @@ SELECT count(*) FROM firebird_query('fb', 'SELECT 1 FROM RDB$RELATIONS WHERE RDB
 ----
 0
 
+# SELECT ... WITH LOCK passes the SELECT check; the server refuses the lock.
+statement error
+SELECT * FROM firebird_query('fb', 'SELECT ID FROM QTYPES WHERE ID = 1 WITH LOCK');
+----
+read-only transaction
+
+statement error
+SELECT * FROM firebird_query('fb', 'SELECT ID FROM QTYPES WHERE ID = 1 FOR UPDATE WITH LOCK');
+----
+read-only transaction
+
 # An autonomous transaction inside the procedure is read-only too.
 statement error
 SELECT * FROM firebird_query('fb', 'SELECT * FROM SP_AUTO');
@@ -272,6 +283,11 @@ read-only transaction
 
 statement error
 SELECT * FROM firebird_query('fb', 'SELECT * FROM SP_EDS_AUTO');
+----
+read-only transaction
+
+statement error
+SELECT * FROM firebird_query('fb', 'SELECT ID FROM QTYPES WHERE ID = 1 WITH LOCK');
 ----
 read-only transaction
 

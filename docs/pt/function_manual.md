@@ -686,6 +686,8 @@ Os dois argumentos podem ser qualquer expressao constante, por exemplo
   read-only transaction"). Testado no Firebird 3, 4 e 5, a recusa tambem
   cobre:
   - DDL executado via `EXECUTE STATEMENT`;
+  - `SELECT ... WITH LOCK` (passa pela checagem de SELECT, mas o servidor
+    recusa o lock);
   - blocos `IN AUTONOMOUS TRANSACTION` (a transacao autonoma tambem e
     somente leitura);
   - `EXECUTE STATEMENT ... ON EXTERNAL DATA SOURCE`, na transacao de quem

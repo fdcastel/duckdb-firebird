@@ -437,6 +437,8 @@ Both arguments may be any constant expression, for example
   writes ("attempted update during read-only transaction"). Tested on
   Firebird 3, 4 and 5, the refusal also covers:
   - DDL run through `EXECUTE STATEMENT`;
+  - `SELECT ... WITH LOCK` (it passes the SELECT check, but the server
+    refuses the lock);
   - `IN AUTONOMOUS TRANSACTION` blocks (the autonomous transaction is
     read-only too);
   - `EXECUTE STATEMENT ... ON EXTERNAL DATA SOURCE`, sharing the caller's
