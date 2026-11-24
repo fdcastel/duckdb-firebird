@@ -712,24 +712,14 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         }
 #endif
     } catch (std::exception &ex) {
-        // A cancel the watcher sent ended a Firebird call: CheckStatus threw
-        // it as InterruptException, or (a batch) it was noted on the
-        // connection and wrapped in a write error. Either way it is the
-        // interrupt; so is the source loop's own check.
-        auto *cancelled_conn = cancel ? cancel->Connection() : nullptr;
-        if (cancelled_conn && !cancelled_conn->CancelAnswered()) {
-            cancelled_conn = nullptr;
-        }
-        if (cancelled_conn || ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
-            const std::string message = cancelled_conn ? FirebirdInterruptMessage(*cancelled_conn)
-                                                       : std::string(InterruptException::INTERRUPT_MESSAGE);
-            cancel.reset();
+        const bool cancelled = cancel && cancel->Connection()->CancelAnswered();
+        cancel.reset();
+        if (cancelled) {
             // The write transaction rolls back with the DuckDB statement.
             obs->SetWriteResult(write_mode, executions, -1);
-            obs->SetErrorIfEmpty(message);
+            obs->SetError(InterruptException::INTERRUPT_MESSAGE);
             throw InterruptException();
         }
-        cancel.reset();
         ErrorData error(ex);
         const bool redact = bind.logged_sql != bind.sql;
         if (redact) {
