@@ -217,7 +217,7 @@ public:
         const auto seq = RecordFirebirdWrite(context, sql_, "insert", table_name_, state.connection_id);
         auto obs = GetObservabilityState(context);
         obs->SetWriteResult(state.res->batch ? "batch" : "row", error.empty() ? state.rows : 0,
-                            error.empty() || state.affected < 0 ? state.affected : 0);
+                            state.affected);
         obs->AddFirebirdTimeUs(state.firebird_time_us);
         obs->SetTotalTimeUs(
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - state.started)
