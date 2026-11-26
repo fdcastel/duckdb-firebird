@@ -154,7 +154,8 @@ SELECT count(*) FROM ro.main.CUSTOMER WHERE ID = 7;
 0
 
 # A duplicate key past the first DuckDB chunk (row 5,001 of 20,000): the
-# rows already sent are rolled back too, and the record keeps none.
+# rows already sent are rolled back too, and the record keeps none. (The
+# record is read first: a scan of the ATTACH makes a record of its own.)
 query I
 INSERT INTO rw.main.CUSTOMER VALUES (6000, 'kept', NULL);
 ----
@@ -165,15 +166,15 @@ INSERT INTO rw.main.CUSTOMER SELECT i + 1000, 'n', NULL FROM range(20000) t(i);
 ----
 row 5001 failed
 
-query I
-SELECT count(*) FROM ro.main.CUSTOMER WHERE ID BETWEEN 1000 AND 20999;
-----
-1
-
 query IIII
 SELECT operation, table_name, rows_written, error_message LIKE '%row 5001 failed%' FROM firebird_last_query();
 ----
 insert	CUSTOMER	0	true
+
+query I
+SELECT count(*) FROM ro.main.CUSTOMER WHERE ID BETWEEN 1000 AND 20999;
+----
+1
 
 # A failure in the source, after rows were sent: none is kept, and the
 # INSERT still gets its record, with the error.
@@ -183,15 +184,15 @@ INSERT INTO rw.main.CUSTOMER SELECT CASE WHEN i = 3000 THEN error('the source fa
 ----
 the source failed
 
-query I
-SELECT count(*) FROM ro.main.CUSTOMER WHERE ID BETWEEN 1000 AND 20999;
-----
-1
-
 query IIII
 SELECT operation, table_name, rows_written, error_message FROM firebird_last_query();
 ----
 insert	CUSTOMER	0	INSERT into Firebird table "CUSTOMER" did not complete; none of its rows were kept
+
+query I
+SELECT count(*) FROM ro.main.CUSTOMER WHERE ID BETWEEN 1000 AND 20999;
+----
+1
 
 statement ok
 SELECT * FROM firebird_execute('rw', 'DELETE FROM CUSTOMER WHERE ID = 6000');
