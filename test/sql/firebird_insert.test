@@ -251,7 +251,7 @@ SELECT count(*) FROM firebird_query('ro', 'SELECT ID FROM RW_COMMIT_GUARD');
 
 # The next write commits as usual.
 query I
-INSERT INTO rw.main.RW_LOG VALUES (-90, 'after the refused commit');
+INSERT INTO rw.main.RW_LOG VALUES (-90, 'after the refusal');
 ----
 1
 
@@ -331,24 +331,36 @@ INSERT INTO rw.main.CUSTOMER DEFAULT VALUES;
 ----
 DEFAULT VALUES is not supported
 
-# ON CONFLICT and INSERT OR REPLACE: CUSTOMER has a primary key, which the
-# catalog loads, so DuckDB's binder turns both into a MERGE, and the ATTACH
-# refuses that with the Firebird upsert to use instead.
+# ON CONFLICT and INSERT OR REPLACE: DuckDB's binder refuses them itself,
+# with or without a conflict target. It checks the table's unique indexes in
+# its storage info, and the ATTACH reports none (CUSTOMER's primary key is
+# loaded for information_schema only). It refuses MERGE INTO a table of the
+# ATTACH too (only DuckDB's own tables).
 statement error
 INSERT INTO rw.main.CUSTOMER VALUES (8, 'c', NULL) ON CONFLICT DO NOTHING;
 ----
-MERGE (and ON CONFLICT, INSERT OR REPLACE) not supported on Firebird catalog; for an upsert use firebird_execute() with UPDATE OR INSERT ... MATCHING
+There are no UNIQUE/PRIMARY KEY constraints that refer to this table, specify ON CONFLICT columns manually
 
 statement error
 INSERT OR REPLACE INTO rw.main.CUSTOMER VALUES (8, 'c', NULL);
 ----
-MERGE (and ON CONFLICT, INSERT OR REPLACE) not supported on Firebird catalog; for an upsert use firebird_execute() with UPDATE OR INSERT ... MATCHING
+There are no UNIQUE/PRIMARY KEY constraints that refer to this table, specify ON CONFLICT columns manually
+
+statement error
+INSERT INTO rw.main.CUSTOMER VALUES (8, 'c', NULL) ON CONFLICT (ID) DO NOTHING;
+----
+The specified columns as conflict target are not referenced by a UNIQUE/PRIMARY KEY CONSTRAINT or INDEX
+
+statement error
+INSERT INTO rw.main.CUSTOMER VALUES (8, 'c', NULL) ON CONFLICT (ID) DO UPDATE SET NAME = excluded.NAME;
+----
+The specified columns as conflict target are not referenced by a UNIQUE/PRIMARY KEY CONSTRAINT or INDEX
 
 statement error
 MERGE INTO rw.main.CUSTOMER c USING (SELECT 8 AS ID, 'm' AS NAME) s ON c.ID = s.ID
 WHEN NOT MATCHED THEN INSERT VALUES (s.ID, s.NAME, NULL);
 ----
-MERGE (and ON CONFLICT, INSERT OR REPLACE) not supported on Firebird catalog; for an upsert use firebird_execute() with UPDATE OR INSERT ... MATCHING
+Can only merge into base tables!
 
 query I
 SELECT count(*) FROM ro.main.CUSTOMER WHERE ID = 8;
