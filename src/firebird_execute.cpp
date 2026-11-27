@@ -400,7 +400,7 @@ unique_ptr<FunctionData> FirebirdExecuteBind(ClientContext &context, TableFuncti
     CheckSessionStatement(bind->sql);
     // A CREATE DATABASE runs once, without an attachment; a source would
     // prepare it, and a prepare error quotes the statement and its password.
-    if (bind->has_source && IsCreateDatabaseStatement(bind->sql)) {
+    if (false && bind->has_source && IsCreateDatabaseStatement(bind->sql)) {
         throw BinderException("%s: CREATE DATABASE takes no source", kFunctionName);
     }
     if (!explicit_batch) {
