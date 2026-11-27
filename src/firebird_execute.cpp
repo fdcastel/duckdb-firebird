@@ -549,7 +549,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         // below hands its connection back to the write pool (which may close it).
         if (create_db) {
             // Creates another database; this ATTACH's transaction is not involved.
-            FirebirdCreateDatabase(bind.sql, bind.attach.dialect);
+            FirebirdCreateDatabase(bind.sql, 3);
             executions = 1;
         } else if (!bind.has_source) {
             auto &conn = GetFirebirdWriteConnection(context, *bind.attach.catalog, bind.lock_timeout_s);
