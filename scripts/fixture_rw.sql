@@ -15,6 +15,8 @@
  *   RW_WIDE  : a wide row (two VARCHAR(8000) UTF8) for the batch buffer.
  *   SP_SEQ   : selectable procedure returning N rows.
  *   RW_LOG / SP_WRITE: a log table, and a selectable procedure that writes.
+ *   SP_LOG_OUT: an executable procedure that writes to RW_LOG and returns a
+ *              value (output parameters, for the batch tests).
  *   RW_COMMIT_GUARD: always empty; a transaction that commits with a row in
  *              it is refused by the RW_COMMIT_CHECK database trigger (a
  *              commit that fails, for the INSERT tests).
@@ -153,6 +155,14 @@ BEGIN
     INSERT INTO RW_LOG (ID, NOTE) VALUES (1, 'written');
     ID = 1;
     SUSPEND;
+END^
+
+CREATE PROCEDURE SP_LOG_OUT (ID INTEGER)
+RETURNS (DOUBLED INTEGER)
+AS
+BEGIN
+    INSERT INTO RW_LOG (ID, NOTE) VALUES (:ID, 'proc');
+    DOUBLED = ID * 2;
 END^
 
 CREATE TRIGGER RW_COMMIT_CHECK ON TRANSACTION COMMIT

@@ -392,6 +392,38 @@ SELECT count(*), count(CITY), sum(ID) FROM ro.main.CUSTOMER;
 statement ok
 SELECT * FROM firebird_execute('rw', 'DELETE FROM CUSTOMER');
 
+# --- Statements that return values run per row ---------------------------------
+# INSERT ... RETURNING and EXECUTE PROCEDURE with output parameters. Firebird 5
+# makes a batch of them, reports every message as done, and writes nothing.
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_LOG');
+
+query I
+SELECT executions FROM firebird_execute('rw', 'INSERT INTO RW_LOG (ID, NOTE) VALUES (?, ''ret'') RETURNING ID',
+    source := 'SELECT i FROM range(1, 251) t(i)');
+----
+250
+
+query II
+SELECT count(*), sum(ID) FROM ro.main.RW_LOG WHERE NOTE = 'ret';
+----
+250	31375
+
+query I
+SELECT executions FROM firebird_execute('rw', 'EXECUTE PROCEDURE SP_LOG_OUT(?)',
+    source := 'SELECT i FROM range(1001, 1251) t(i)');
+----
+250
+
+query II
+SELECT count(*), sum(ID) FROM ro.main.RW_LOG WHERE NOTE = 'proc';
+----
+250	281375
+
+statement ok
+SELECT * FROM firebird_execute('rw', 'DELETE FROM RW_LOG');
+
 # --- BLOB parameters keep the per-row path ---------------------------------------
 
 statement ok
