@@ -215,7 +215,6 @@ public:
         // ran in Sink). An INSERT that got no row never prepared: it has no
         // statement nor connection.
         if (state.res->batch) {
-            FirebirdCancelGuard cancel(context, &state.res->stmt->Connection());
             Flush(context, state, t0);
         }
         AddTime(state, t0);
