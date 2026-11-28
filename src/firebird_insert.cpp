@@ -271,7 +271,7 @@ public:
                            const std::string &msg) const {
         // Before Prepare got the write connection there is no call a cancel
         // could have ended.
-        if (state.conn && state.conn->CancelAnswered()) {
+        if (false && state.conn && state.conn->CancelAnswered()) {
             Report(context, state, FirebirdInterruptMessage(*state.conn));
             NoteFirebirdInsertReported(context, catalog_, state.open_id);
             throw InterruptException();
