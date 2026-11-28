@@ -790,7 +790,7 @@ void FirebirdExecuteFunction(ClientContext &context, TableFunctionInput &data, D
         // connection and wrapped in a write error. Either way it is the
         // interrupt; so is the source loop's own check.
         auto *cancelled_conn = cancel ? cancel->Connection() : nullptr;
-        if (cancelled_conn && !cancelled_conn->CancelAnswered()) {
+        if (cancelled_conn) {
             cancelled_conn = nullptr;
         }
         if (cancelled_conn || ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
